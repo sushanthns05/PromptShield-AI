@@ -107,8 +107,11 @@ To prevent LLM agent workflows from reusing a benign prompt's analysis context t
 
 ### Strict Execution Invariants (`/api/v1/tools/execute`)
 - **Prior Authorization Required**: Execution strictly requires `require_previously_bound=True`. An unbound context is rejected with HTTP 403 Forbidden. Calling execute cannot mint an intent binding.
-- **Canonical Serialization Integrity**: Tool intent serialization utilizes `json.dumps(..., sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)` to guarantee tamper-evident SHA-256 hash validation and reject `NaN` or `Infinity` payloads.
-- **In-Memory Immutability**: `AnalysisContext` fields are read-only properties protected against accidental in-memory tampering.
+- **Context-Bound Approval Tokens**: An execution requiring human approval must use exactly the approval ID associated with the previously authorized analysis context (`bound_approval_id`). Cross-context approval substitution is rejected with HTTP 403 Forbidden, even if tool, arguments, and requester are identical.
+- **Store-Level Approval Association Invariants**: `AnalysisContextStore.associate_approval_id()` and `get_or_create_approval_id()` operate atomically under the store lock. Re-associating the same approval ID is idempotent; attempting to overwrite with a different approval ID raises `ValueError`. Invalid, empty, or whitespace-only IDs and expired contexts are strictly rejected.
+- **Unified & Hardened Canonical Serialization**: Canonicalization via `backend/app/policies/canonicalization.py` is shared across `AnalysisContextStore`, `ApprovalManager`, and `ToolAuthorizer`. It enforces sorted keys, compact separators `(',', ':')`, `ensure_ascii=True`, `allow_nan=False`, strictly rejects non-string dictionary keys, NaN/Infinity values, non-dict top-level arguments, and unsupported Python objects, preserving exact type distinctions (e.g. integer `1` vs string `"1"`).
+- **Strict Positive Integer TTL Enforcement**: Both `AnalysisContextStore` and `ApprovalManager` enforce positive integer TTLs via `validate_ttl()`. Booleans (`True`/`False`), zero, negative integers, floats, strings, and `None` are strictly rejected.
+- **In-Memory Immutability & Defensive Snapshots**: `AnalysisContext` fields are read-only properties protected against in-memory tampering.
 
 ---
 
@@ -117,10 +120,12 @@ To prevent LLM agent workflows from reusing a benign prompt's analysis context t
 For `HIGH` and `CRITICAL` risk tools, tool authorization transitions to `REQUIRE_APPROVAL` and mints an approval request token (`appr-<uuid>`).
 
 ### Security Controls in Approval Lifecycle:
-1. **Parameter Binding**: The approval record stores a canonical copy of `tool_name`, `arguments`, `requester_id`, and `risk_level`. When execution is requested, arguments are checked against the approved state. Any modification (e.g. changing an email recipient from `client@corp.com` to `attacker@evil.com`) is rejected as argument tampering.
-2. **Replay Attack Prevention**: Upon successful execution, the approval token transitions to `CONSUMED`. Subsequent requests attempting to reuse the same approval ID fail closed.
-3. **Expiration Time-to-Live (TTL)**: Approvals carry a strict expiration window (default: 300 seconds). Expired approvals cannot be approved or executed.
-4. **Separation of Duties**: A requester cannot approve their own high-risk action (`requester_id != approver_id`). Approving `HIGH` or `CRITICAL` actions requires `ADMIN` privileges.
+1. **Context-Bound Approval Token Enforcement**: The approval token is cryptographically and logically bound to the originating `analysis_id`. Execution rejects any approval ID not bound to the caller's verified context.
+2. **Defensive Snapshotting of Records**: All methods on `ApprovalManager` (`get_request`, `create_request`, `approve`, `reject`) return deep-copied snapshots (`copy.deepcopy`) of `ApprovalRequest` and its nested `arguments`. Callers mutating returned records cannot compromise or alter internal gateway approval state.
+3. **Parameter Binding & Tamper Detection**: The approval record stores a canonical copy of `tool_name`, `arguments`, `requester_id`, and `risk_level`. When execution is requested, arguments are checked against the approved state using unified canonical serialization. Any modification (e.g. changing an email recipient from `client@corp.com` to `attacker@evil.com`) is rejected as argument tampering.
+4. **Replay Attack Prevention**: Upon successful execution, the approval token transitions to `CONSUMED`. Subsequent requests attempting to reuse the same approval ID fail closed.
+5. **Strict Expiration Time-to-Live (TTL)**: Approvals carry a strict positive integer expiration window (default: 300 seconds). Non-positive integer TTLs are rejected at creation. Expired approvals cannot be approved or executed.
+6. **Separation of Duties**: A requester cannot approve their own high-risk action (`requester_id != approver_id`). Approving `HIGH` or `CRITICAL` actions requires `ADMIN` privileges.
 
 ---
 

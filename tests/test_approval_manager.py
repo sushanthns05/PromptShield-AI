@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pytest
 
 from backend.app.policies.approval_manager import (
@@ -99,15 +99,17 @@ def test_separation_of_duties_requester_cannot_self_approve(approval_manager):
 
 
 def test_expired_approval_cannot_be_approved(approval_manager):
-    # Expired by setting negative TTL
+    # Expired approval simulation
     req = approval_manager.create_request(
         tool_name="send_email",
         arguments={"recipient": "user@example.com"},
         requester_id="dev-01",
         requester_role=UserRole.DEVELOPER,
         risk_level=ToolRiskLevel.HIGH,
-        ttl_seconds=-10,
+        ttl_seconds=300,
     )
+    # Simulate expiration on internal record
+    approval_manager._approvals[req.approval_id].expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
     with pytest.raises(ValueError):
         approval_manager.approve(
             approval_id=req.approval_id,
@@ -281,3 +283,125 @@ def test_concurrent_approval_token_consumption_is_thread_safe(approval_manager):
 
     assert success_count == 1
     assert failure_count == 9
+
+
+# ---------------------------------------------------------------------------
+# Day 9 Final Approval Lifecycle Security Remediation Tests
+# ---------------------------------------------------------------------------
+
+
+def test_approval_record_mutation_defense(approval_manager):
+    """
+    Security Guarantee:
+    ApprovalRequest objects and nested arguments returned to callers
+    are defensive copies (snapshots). Caller mutations cannot alter internal state.
+    """
+    args = {"recipient": "user@example.com", "details": {"dept": "eng", "tags": ["prod"]}}
+    req = approval_manager.create_request(
+        tool_name="send_email",
+        arguments=args,
+        requester_id="dev-01",
+        requester_role=UserRole.DEVELOPER,
+        risk_level=ToolRiskLevel.HIGH,
+    )
+
+    # 1. Mutate returned snapshot from create_request
+    req.tool_name = "malicious_tool"
+    req.arguments["recipient"] = "evil@attacker.com"
+    req.arguments["details"]["dept"] = "finance"
+    req.arguments["details"]["tags"].append("tampered")
+
+    # Verify internal state remains completely intact
+    fetched = approval_manager.get_request(req.approval_id)
+    assert fetched.tool_name == "send_email"
+    assert fetched.arguments["recipient"] == "user@example.com"
+    assert fetched.arguments["details"]["dept"] == "eng"
+    assert fetched.arguments["details"]["tags"] == ["prod"]
+
+    # 2. Mutate snapshot returned from get_request
+    fetched.arguments["injected"] = "payload"
+    fetched_again = approval_manager.get_request(req.approval_id)
+    assert "injected" not in fetched_again.arguments
+
+    # 3. Approve and mutate snapshot returned from approve
+    appr_snap = approval_manager.approve(
+        approval_id=req.approval_id,
+        approver_id="admin-01",
+        approver_role=UserRole.ADMIN,
+    )
+    appr_snap.arguments["recipient"] = "admin@internal.corp"
+    after_appr = approval_manager.get_request(req.approval_id)
+    assert after_appr.arguments["recipient"] == "user@example.com"
+
+    # 4. Consume with original arguments succeeds
+    assert approval_manager.consume(
+        approval_id=req.approval_id,
+        tool_name="send_email",
+        arguments=args,
+        requester_id="dev-01",
+    ) is True
+
+
+def test_approval_manager_ttl_validation():
+    """
+    Security Invariant:
+    ApprovalManager rejects non-positive-integer TTLs at initialization and request creation.
+    Specifically: booleans, zero, negative integers, floats, strings, None.
+    """
+    invalid_ttls = [0, -1, -300, True, False, 1.5, "300", None, [], {}]
+
+    for val in invalid_ttls:
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            ApprovalManager(default_ttl_seconds=val)  # type: ignore
+
+    mgr = ApprovalManager(default_ttl_seconds=300)
+    for val in invalid_ttls:
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            mgr.create_request(
+                tool_name="send_email",
+                arguments={"a": 1},
+                requester_id="dev-01",
+                requester_role=UserRole.DEVELOPER,
+                risk_level=ToolRiskLevel.HIGH,
+                ttl_seconds=val,  # type: ignore
+            )
+
+
+def test_argument_canonicalization_strict_validation():
+    """
+    Integrity Guarantee:
+    canonicalize_arguments rejects non-dict inputs, non-string keys, NaN/Infinity,
+    and unsupported Python types.
+    """
+    from backend.app.policies.canonicalization import canonicalize_arguments
+
+    # Valid canonical output is sorted, compact, ASCII
+    assert canonicalize_arguments({"b": 2, "a": 1}) == '{"a":1,"b":2}'
+
+    # Top-level non-dict
+    with pytest.raises(ValueError, match="arguments must be a dictionary"):
+        canonicalize_arguments(["item1", "item2"])  # type: ignore
+
+    with pytest.raises(ValueError, match="arguments must be a dictionary"):
+        canonicalize_arguments("just a string")  # type: ignore
+
+    # Non-string dictionary keys rejected
+    with pytest.raises(TypeError, match="Non-canonical or invalid argument structure"):
+        canonicalize_arguments({1: "integer_key"})  # type: ignore
+
+    with pytest.raises(TypeError, match="Non-canonical or invalid argument structure"):
+        canonicalize_arguments({"nested": {True: "bool_key"}})  # type: ignore
+
+    # NaN and Infinity rejected
+    with pytest.raises(ValueError, match="Non-canonical or invalid argument structure"):
+        canonicalize_arguments({"val": float("nan")})
+
+    with pytest.raises(ValueError, match="Non-canonical or invalid argument structure"):
+        canonicalize_arguments({"nested": {"val": float("inf")}})
+
+    with pytest.raises(ValueError, match="Non-canonical or invalid argument structure"):
+        canonicalize_arguments({"nested": [1, 2, float("-inf")]})
+
+    # Unsupported types rejected
+    with pytest.raises(TypeError, match="Non-canonical or invalid argument structure"):
+        canonicalize_arguments({"items": {1, 2, 3}})  # set

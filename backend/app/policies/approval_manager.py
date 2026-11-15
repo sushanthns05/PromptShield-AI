@@ -1,12 +1,13 @@
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-import json
 import logging
 import threading
 from typing import Any, Optional
 from uuid import uuid4
 
+from backend.app.policies.canonicalization import canonicalize_arguments, validate_ttl
 from backend.app.policies.tool_registry import ToolRiskLevel, UserRole
 
 logger = logging.getLogger("promptshield.approval_manager")
@@ -62,6 +63,9 @@ class ApprovalRequest:
         }
 
 
+_DEFAULT_TTL = object()
+
+
 class ApprovalManager:
     """
     Thread-safe in-memory human approval management workflow.
@@ -72,14 +76,41 @@ class ApprovalManager:
     """
 
     def __init__(self, default_ttl_seconds: int = 300):
-        self.default_ttl_seconds = default_ttl_seconds
+        self.default_ttl_seconds = validate_ttl(default_ttl_seconds, "default_ttl_seconds")
         self._approvals: dict[str, ApprovalRequest] = {}
         self._lock = threading.RLock()
 
     @staticmethod
     def _canonicalize_args(args: dict[str, Any]) -> str:
         """Produce canonical JSON representation of arguments for tamper-evident comparison."""
-        return json.dumps(args, sort_keys=True)
+        return canonicalize_arguments(args)
+
+    def _get_request_internal(self, approval_id: str) -> Optional[ApprovalRequest]:
+        """Internal lookup returning the mutable reference under self._lock."""
+        req = self._approvals.get(approval_id)
+        if req and req.status == ApprovalStatus.PENDING and req.is_expired:
+            req.status = ApprovalStatus.EXPIRED
+        return req
+
+    def _snapshot(self, req: Optional[ApprovalRequest]) -> Optional[ApprovalRequest]:
+        """Return a defensive, deep-copied snapshot of an ApprovalRequest record."""
+        if req is None:
+            return None
+        return ApprovalRequest(
+            approval_id=req.approval_id,
+            tool_name=req.tool_name,
+            arguments=deepcopy(req.arguments),
+            requester_id=req.requester_id,
+            requester_role=req.requester_role,
+            risk_level=req.risk_level,
+            created_at=req.created_at,
+            expires_at=req.expires_at,
+            status=req.status,
+            decided_by=req.decided_by,
+            decided_at=req.decided_at,
+            decision_reason=req.decision_reason,
+            consumed_at=req.consumed_at,
+        )
 
     def create_request(
         self,
@@ -88,9 +119,13 @@ class ApprovalManager:
         requester_id: str,
         requester_role: UserRole,
         risk_level: ToolRiskLevel,
-        ttl_seconds: Optional[int] = None,
+        ttl_seconds: Any = _DEFAULT_TTL,
     ) -> ApprovalRequest:
-        ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl_seconds
+        ttl = self.default_ttl_seconds if ttl_seconds is _DEFAULT_TTL else validate_ttl(ttl_seconds, "ttl_seconds")
+
+        # Validate canonical argument structure before queuing
+        canonicalize_arguments(arguments)
+
         now = datetime.now(timezone.utc)
         expires_at = datetime.fromtimestamp(now.timestamp() + ttl, tz=timezone.utc)
 
@@ -98,7 +133,7 @@ class ApprovalManager:
         req = ApprovalRequest(
             approval_id=approval_id,
             tool_name=tool_name,
-            arguments=dict(arguments),
+            arguments=deepcopy(arguments),
             requester_id=requester_id,
             requester_role=requester_role,
             risk_level=risk_level,
@@ -116,14 +151,13 @@ class ApprovalManager:
             requester_id,
             ttl,
         )
-        return req
+        return self._snapshot(req)
 
     def get_request(self, approval_id: str) -> Optional[ApprovalRequest]:
+        """Return a defensive deep-copied snapshot of an approval request."""
         with self._lock:
-            req = self._approvals.get(approval_id)
-            if req and req.status == ApprovalStatus.PENDING and req.is_expired:
-                req.status = ApprovalStatus.EXPIRED
-            return req
+            req = self._get_request_internal(approval_id)
+            return self._snapshot(req)
 
     def approve(
         self,
@@ -133,7 +167,7 @@ class ApprovalManager:
         reason: Optional[str] = None,
     ) -> ApprovalRequest:
         with self._lock:
-            req = self.get_request(approval_id)
+            req = self._get_request_internal(approval_id)
             if not req:
                 raise KeyError(f"Approval request '{approval_id}' not found")
 
@@ -159,7 +193,7 @@ class ApprovalManager:
             req.decision_reason = reason or "Approved by authorized reviewer"
 
             logger.info("Approval '%s' APPROVED by '%s' (%s)", approval_id, approver_id, approver_role.value)
-            return req
+            return self._snapshot(req)
 
     def reject(
         self,
@@ -169,7 +203,7 @@ class ApprovalManager:
         reason: Optional[str] = None,
     ) -> ApprovalRequest:
         with self._lock:
-            req = self.get_request(approval_id)
+            req = self._get_request_internal(approval_id)
             if not req:
                 raise KeyError(f"Approval request '{approval_id}' not found")
 
@@ -187,7 +221,7 @@ class ApprovalManager:
             req.decision_reason = reason or "Rejected by authorized reviewer"
 
             logger.info("Approval '%s' REJECTED by '%s' (%s)", approval_id, approver_id, approver_role.value)
-            return req
+            return self._snapshot(req)
 
     def consume(
         self,
@@ -202,7 +236,7 @@ class ApprovalManager:
         token hijacking, or argument tampering.
         """
         with self._lock:
-            req = self.get_request(approval_id)
+            req = self._get_request_internal(approval_id)
             if not req:
                 raise KeyError(f"Approval request '{approval_id}' not found")
 
@@ -226,7 +260,7 @@ class ApprovalManager:
             if req.tool_name != tool_name:
                 raise ValueError(f"Approval token bound to '{req.tool_name}', not requested tool '{tool_name}'")
 
-            # Verify argument binding
+            # Verify argument binding using canonical representation
             expected_canonical = self._canonicalize_args(req.arguments)
             actual_canonical = self._canonicalize_args(arguments)
             if expected_canonical != actual_canonical:

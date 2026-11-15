@@ -43,20 +43,27 @@ PromptShield AI provides an adaptive runtime security gateway for LLM applicatio
 - **Authoritative Risk Scoring**: The gateway retrieves the risk score directly from the server-side `AnalysisContextStore`. Client-supplied `risk_score` values are ignored.
 - **No Zero-Risk Fallbacks**: If `analysis_id` is omitted, invalid, or expired, requests are rejected with HTTP 422 or HTTP 400. The gateway never falls back to `risk_score = 0`.
 - **Identity Binding**: Each `analysis_id` is bound to the `requester_id` that initiated the analysis. Presenting another requester's `analysis_id` yields HTTP 403 Forbidden.
-- **Configurable TTL**: Analysis contexts expire after a configurable TTL (default: 300 seconds).
+- **Positive Integer TTL Enforcement**: Analysis contexts strictly require positive integer TTLs (default: 300 seconds), validated via `validate_ttl()`. Non-integers, floats, booleans (`True`/`False`), strings, negative numbers, and `None` are rejected with `ValueError`.
 
-### 2.2 Analysis-to-Tool Intent Binding & Ordered Authorization Flow
+### 2.2 Analysis-to-Tool Intent Binding, Context-Bound Approvals & Ordered Flow
 - **Intent Protection**: An `analysis_id` cannot be reused to authorize or execute unrelated tool operations.
 - **Ordered Authorization Sequence**:
   - Preliminary evaluation is completely side-effect-free (no approvals minted and no intent bound).
   - `DENY` decisions **NEVER** bind tool intent and never create approval records.
   - Only when policy checks pass (`ALLOW` or `REQUIRE_APPROVAL`) is intent atomically bound.
   - If approval is required, identical concurrent authorization requests are deduplicated under store locks so that only one pending approval is created.
+- **Context-Bound Approval Tokens**:
+  - Tool execution requiring approval strictly requires the exact `approval_id` bound to that analysis context (`ctx.bound_intent.approval_id`).
+  - Cross-context approval substitution is rejected with HTTP 403 Forbidden, even if tool, arguments, and requester are identical.
+  - Store-level association via `AnalysisContextStore.associate_approval_id()` and `get_or_create_approval_id()` is atomic and prevents overwriting an existing bound approval ID with a different ID.
+- **Defensive Snapshotting of Approval Records**:
+  - `ApprovalManager` returns defensive deep-copied snapshots (`copy.deepcopy`) of `ApprovalRequest` objects and nested `arguments` dictionaries. Caller mutations cannot affect internal gateway records.
 - **Strict Execution Invariant (`/api/v1/tools/execute`)**:
   - Execution strictly requires `require_previously_bound=True`. An unbound analysis context is rejected with HTTP 403 Forbidden. Execution cannot mint an intent binding.
-- **Canonical Serialization & Integrity**:
-  - Arguments are canonicalized via `json.dumps(..., sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)`.
-  - Rejects `NaN`, `Infinity`, non-JSON objects, and invalid inputs.
+- **Unified Canonical Serialization & Integrity**:
+  - Arguments are canonicalized via `backend/app/policies/canonicalization.py`.
+  - Enforces sorted keys, compact separators `(',', ':')`, `ensure_ascii=True`, `allow_nan=False`.
+  - Rejects non-string dictionary keys, `NaN`, `Infinity`, non-dict top-level arguments, and unsupported Python types.
   - Tamper detection verifies normalized tool name, canonical JSON, and SHA-256 hash (`sha256(tool:args)`).
 - **In-Memory Immutability**:
   - `AnalysisContext` fields are protected against in-memory mutation via read-only properties and controlled transition methods.

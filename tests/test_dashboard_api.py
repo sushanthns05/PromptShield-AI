@@ -5,6 +5,7 @@ tool metadata registry, human approval dashboards, and Day 8.5 benchmark reporti
 """
 
 import asyncio
+from datetime import datetime, timezone, timedelta
 import json
 from pathlib import Path
 from typing import Any, Optional
@@ -178,8 +179,10 @@ def test_tool_authorize_expired_analysis_id_rejected(client):
         risk_score=10,
         decision="ALLOW",
         requester_id="test-user-exp",
-        ttl_seconds=-10,  # Pre-expired
+        ttl_seconds=300,
     )
+    # Simulate expiration on internal record
+    expired_ctx._expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
 
     payload = {
         "tool_name": "get_weather",
@@ -1430,6 +1433,282 @@ def test_analysis_context_immutability():
     with pytest.raises(AttributeError):
         ctx.bound_intent = ToolIntentBinding("tool", "{}", "hash", datetime.now(timezone.utc))  # type: ignore
 
-    # Controlled methods enforce invariants
-    with pytest.raises(ValueError, match="Requester already bound"):
-        ctx.bind_requester("another-user")
+
+# ---------------------------------------------------------------------------
+# Day 9 Final Approval Lifecycle Security Remediation Tests
+# ---------------------------------------------------------------------------
+
+
+def test_cross_context_approval_substitution_rejected(client):
+    """
+    Security Invariant:
+    An execution requiring human approval must use exactly the approval ID
+    associated with the previously authorized analysis context.
+    Using an approved token from another analysis context MUST be rejected with 403,
+    even if the tool, arguments, and requester are identical.
+    """
+    email_args = {"recipient": "boss@corp.com", "subject": "Q4 Budget", "body": "Attached"}
+
+    # 1. Create Context A and authorize send_email
+    status, a1, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Draft budget notice 1", "requester_id": "dev-multi"},
+    )
+    assert status == 200
+    ctx_a = a1["analysis_id"]
+
+    auth_a = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-multi",
+        "requester_role": "DEVELOPER",
+        "analysis_id": ctx_a,
+    }
+    status, body_auth_a, _ = client.post("/api/v1/tools/authorize", json_data=auth_a)
+    assert status == 200
+    assert body_auth_a["decision"] == "REQUIRE_APPROVAL"
+    appr_a = body_auth_a["approval_id"]
+
+    # 2. Create Context B and authorize identical send_email
+    status, a2, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Draft budget notice 2", "requester_id": "dev-multi"},
+    )
+    assert status == 200
+    ctx_b = a2["analysis_id"]
+
+    auth_b = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-multi",
+        "requester_role": "DEVELOPER",
+        "analysis_id": ctx_b,
+    }
+    status, body_auth_b, _ = client.post("/api/v1/tools/authorize", json_data=auth_b)
+    assert status == 200
+    assert body_auth_b["decision"] == "REQUIRE_APPROVAL"
+    appr_b = body_auth_b["approval_id"]
+    assert appr_a != appr_b
+
+    # 3. Admin approves both approval requests
+    for appr_id in [appr_a, appr_b]:
+        status, _, _ = client.post(
+            f"/api/v1/tools/approvals/{appr_id}/decision",
+            json_data={
+                "decision": "APPROVE",
+                "approver_id": "admin-security",
+                "approver_role": "ADMIN",
+                "reason": "Authorized after review",
+            },
+        )
+        assert status == 200
+
+    # 4. Attempt cross-context substitution: execute Context B with appr_a -> 403 Forbidden
+    cross_exec = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-multi",
+        "requester_role": "DEVELOPER",
+        "analysis_id": ctx_b,
+        "approval_id": appr_a,
+    }
+    status, body, _ = client.post("/api/v1/tools/execute", json_data=cross_exec)
+    assert status == 403
+    assert "does not match the approval token" in body["detail"].lower()
+
+    # 5. Reverse substitution: execute Context A with appr_b -> 403 Forbidden
+    rev_cross_exec = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-multi",
+        "requester_role": "DEVELOPER",
+        "analysis_id": ctx_a,
+        "approval_id": appr_b,
+    }
+    status, body, _ = client.post("/api/v1/tools/execute", json_data=rev_cross_exec)
+    assert status == 403
+    assert "does not match the approval token" in body["detail"].lower()
+
+
+def test_missing_and_mismatched_approval_id_rejected(client):
+    """
+    Security Invariant:
+    If a context requires human approval, execution without an approval_id
+    or with a mismatched/fabricated approval_id must be rejected with 403.
+    """
+    email_args = {"recipient": "team@corp.com", "subject": "Reminder", "body": "Standup"}
+
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Send team reminder", "requester_id": "dev-flow"},
+    )
+    analysis_id = a_body["analysis_id"]
+
+    auth_payload = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-flow",
+        "requester_role": "DEVELOPER",
+        "analysis_id": analysis_id,
+    }
+    status, auth_body, _ = client.post("/api/v1/tools/authorize", json_data=auth_payload)
+    assert status == 200
+    approval_id = auth_body["approval_id"]
+
+    # Approve request
+    status, _, _ = client.post(
+        f"/api/v1/tools/approvals/{approval_id}/decision",
+        json_data={
+            "decision": "APPROVE",
+            "approver_id": "admin-flow",
+            "approver_role": "ADMIN",
+            "reason": "OK",
+        },
+    )
+    assert status == 200
+
+    # 1. Missing approval_id
+    missing_appr_payload = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-flow",
+        "requester_role": "DEVELOPER",
+        "analysis_id": analysis_id,
+    }
+    status, body, _ = client.post("/api/v1/tools/execute", json_data=missing_appr_payload)
+    assert status == 403
+    assert "requires human approval" in body["detail"].lower()
+
+    # 2. Fabricated / mismatched approval_id
+    fake_appr_payload = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-flow",
+        "requester_role": "DEVELOPER",
+        "analysis_id": analysis_id,
+        "approval_id": "appr-00000000000000000000000000000000",
+    }
+    status, body, _ = client.post("/api/v1/tools/execute", json_data=fake_appr_payload)
+    assert status == 403
+    assert "does not match the approval token" in body["detail"].lower()
+
+    # 3. Legitimate execution with bound approval_id succeeds
+    valid_payload = {
+        "tool_name": "send_email",
+        "arguments": email_args,
+        "requester_id": "dev-flow",
+        "requester_role": "DEVELOPER",
+        "analysis_id": analysis_id,
+        "approval_id": approval_id,
+    }
+    status, body, _ = client.post("/api/v1/tools/execute", json_data=valid_payload)
+    assert status == 200
+    assert body["status"] == "SUCCESS"
+    assert "result" in body
+    assert body["result"]["status"] == "queued"
+    assert "simulated" in body["result"]["message"].lower()
+
+
+def test_low_risk_tool_executes_without_approval_id(client):
+    """
+    Usability & Safety Guarantee:
+    Low-risk tools that do not require approval continue to authorize and execute
+    cleanly without requiring an approval_id.
+    """
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "What is the weather in Seattle?", "requester_id": "user-low-risk"},
+    )
+    analysis_id = a_body["analysis_id"]
+
+    auth_payload = {
+        "tool_name": "get_weather",
+        "arguments": {"location": "Seattle"},
+        "requester_id": "user-low-risk",
+        "requester_role": "USER",
+        "analysis_id": analysis_id,
+    }
+    status, auth_body, _ = client.post("/api/v1/tools/authorize", json_data=auth_payload)
+    assert status == 200
+    assert auth_body["decision"] == "ALLOW"
+    assert auth_body["approval_id"] is None
+
+    exec_payload = {
+        "tool_name": "get_weather",
+        "arguments": {"location": "Seattle"},
+        "requester_id": "user-low-risk",
+        "requester_role": "USER",
+        "analysis_id": analysis_id,
+    }
+    status, exec_body, _ = client.post("/api/v1/tools/execute", json_data=exec_payload)
+    assert status == 200
+    assert exec_body["status"] == "SUCCESS"
+    assert "result" in exec_body
+
+
+def test_analysis_context_store_associate_approval_id_hardening():
+    """
+    Security Invariant:
+    associate_approval_id:
+    - Allows duplicate association with the identical approval_id (idempotent).
+    - Strictly rejects replacing with a different approval_id.
+    - Rejects invalid / empty approval_id.
+    - Rejects expired or non-existent context.
+    """
+    store = AnalysisContextStore(default_ttl_seconds=300)
+    ctx = store.create_context(
+        risk_score=15,
+        decision="ALLOW",
+        requester_id="test-store-user",
+    )
+
+    # 1. Bind tool intent first
+    store.bind_or_validate_intent(ctx.analysis_id, "send_email", {"recipient": "a@b.com"})
+
+    # 2. First association succeeds
+    assert store.associate_approval_id(ctx.analysis_id, "appr-valid-1111") is True
+    assert store.get_context(ctx.analysis_id).bound_intent.approval_id == "appr-valid-1111"
+
+    # 3. Idempotent duplicate association with identical ID succeeds
+    assert store.associate_approval_id(ctx.analysis_id, "appr-valid-1111") is True
+
+    # 4. Attempt to associate a DIFFERENT approval_id raises ValueError
+    with pytest.raises(ValueError, match="already associated:"):
+        store.associate_approval_id(ctx.analysis_id, "appr-different-2222")
+
+    # 5. Invalid / empty approval_id raises ValueError
+    for bad_id in ["", "   ", None, 123]:
+        with pytest.raises(ValueError, match="approval_id must be a non-empty string"):
+            store.associate_approval_id(ctx.analysis_id, bad_id)  # type: ignore
+
+    # 6. Non-existent context raises ValueError
+    with pytest.raises(ValueError, match="not found"):
+        store.associate_approval_id("non-existent-analysis-id", "appr-valid-3333")
+
+    # 7. Expired context raises ValueError
+    ctx._expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    with pytest.raises(ValueError, match="expired"):
+        store.associate_approval_id(ctx.analysis_id, "appr-valid-1111")
+
+
+def test_analysis_context_store_ttl_validation():
+    """
+    Security Invariant:
+    AnalysisContextStore strictly validates positive integer TTLs upon store creation
+    and upon create_context, rejecting booleans, 0, negative integers, floats, strings, None.
+    """
+    invalid_ttls = [0, -1, -60, True, False, 1.5, "300", None, [], {}]
+
+    for val in invalid_ttls:
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            AnalysisContextStore(default_ttl_seconds=val)  # type: ignore
+
+    store = AnalysisContextStore(default_ttl_seconds=300)
+    for val in invalid_ttls:
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            store.create_context(
+                risk_score=10,
+                decision="ALLOW",
+                requester_id="user",
+                ttl_seconds=val,  # type: ignore
+            )

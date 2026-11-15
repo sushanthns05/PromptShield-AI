@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 import pytest
 
 from backend.app.policies.approval_manager import ApprovalManager
@@ -208,8 +209,10 @@ def test_expired_approval_rejected_in_authorizer(authorizer, approval_manager):
         requester_id="dev-01",
         requester_role=UserRole.DEVELOPER,
         risk_level=ToolRegistry().get_tool("send_email").risk_level,
-        ttl_seconds=-5,  # immediately expired
+        ttl_seconds=300,
     )
+    # Simulate expiration on internal record
+    approval_manager._approvals[req.approval_id].expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
     res = authorizer.authorize(
         tool_name="send_email",
         arguments=args,

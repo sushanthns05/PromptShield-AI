@@ -45,35 +45,11 @@ class ToolIntentBinding:
         )
 
 
-def canonicalize_tool_intent(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str, str]:
-    """
-    Deterministically canonicalize tool name and arguments.
-    Enforces allow_nan=False, sort_keys=True, separators=(',', ':'), ensure_ascii=True.
-    Rejects NaN, Infinity, non-JSON types, and malformed inputs.
-    Returns (normalized_tool_name, canonical_arguments_json, sha256_hash).
-    """
-    if not isinstance(tool_name, str) or not tool_name.strip():
-        raise ValueError("tool_name must be a non-empty string")
-
-    norm_tool = tool_name.strip().lower()
-
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be a dictionary")
-
-    try:
-        canonical_args = json.dumps(
-            arguments,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Non-canonical or invalid argument structure: {exc}") from exc
-
-    intent_payload = f"{norm_tool}:{canonical_args}"
-    intent_hash = hashlib.sha256(intent_payload.encode("utf-8")).hexdigest()
-    return norm_tool, canonical_args, intent_hash
+from backend.app.policies.canonicalization import (
+    canonicalize_arguments,
+    canonicalize_tool_intent,
+    validate_ttl,
+)
 
 
 class AnalysisContext:
@@ -152,10 +128,23 @@ class AnalysisContext:
         self._bound_intent = intent
 
     def set_intent_approval_id(self, approval_id: str) -> None:
-        """Associate an approval_id with the bound intent."""
+        """
+        Associate an approval_id with the bound intent.
+        Rejects empty/invalid approval IDs and prevents overwriting an existing different approval ID.
+        """
         if self._bound_intent is None:
             raise ValueError("Cannot set approval_id on unbound context")
-        self._bound_intent = self._bound_intent.with_approval_id(approval_id)
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a non-empty string")
+        clean_id = approval_id.strip()
+        if self._bound_intent.approval_id is not None:
+            if self._bound_intent.approval_id != clean_id:
+                raise ValueError(
+                    f"Approval ID already associated: context '{self._analysis_id}' is bound to approval "
+                    f"'{self._bound_intent.approval_id}', cannot replace with '{clean_id}'"
+                )
+            return
+        self._bound_intent = self._bound_intent.with_approval_id(clean_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -173,6 +162,9 @@ class AnalysisContext:
         }
 
 
+_DEFAULT_TTL = object()
+
+
 class AnalysisContextStore:
     """
     Thread-safe in-memory store for server-generated prompt analysis contexts.
@@ -182,7 +174,7 @@ class AnalysisContextStore:
     """
 
     def __init__(self, default_ttl_seconds: int = 300):
-        self.default_ttl_seconds = default_ttl_seconds
+        self.default_ttl_seconds = validate_ttl(default_ttl_seconds, "default_ttl_seconds")
         self._contexts: dict[str, AnalysisContext] = {}
         self._lock = threading.RLock()
 
@@ -192,13 +184,14 @@ class AnalysisContextStore:
         decision: str,
         requester_id: Optional[str] = None,
         context_trust_level: str = "UNTRUSTED",
-        ttl_seconds: Optional[int] = None,
+        ttl_seconds: Any = _DEFAULT_TTL,
     ) -> AnalysisContext:
         """
         Create a new server-controlled analysis context with a cryptographically unique ID.
         External clients cannot promote context_trust_level to TRUSTED or SYSTEM_TRUSTED.
+        Validates that TTL is a positive integer.
         """
-        ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl_seconds
+        ttl = self.default_ttl_seconds if ttl_seconds is _DEFAULT_TTL else validate_ttl(ttl_seconds, "ttl_seconds")
         now = datetime.now(timezone.utc)
         expires_at = datetime.fromtimestamp(now.timestamp() + ttl, tz=timezone.utc)
 
@@ -422,32 +415,67 @@ class AnalysisContextStore:
             return None
 
     def associate_approval_id(self, analysis_id: str, approval_id: str) -> bool:
-        """Associate an approval ID with the context's bound intent."""
+        """
+        Hardened association of approval_id with analysis context's bound intent.
+        - Validates analysis_id and approval_id are non-empty strings.
+        - Checks context exists and has not expired.
+        - Rejects overwriting an existing different approval_id.
+        """
+        if not isinstance(analysis_id, str) or not analysis_id.strip():
+            raise ValueError("analysis_id must be a non-empty string")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a non-empty string")
+
+        clean_analysis_id = analysis_id.strip()
+        clean_appr_id = approval_id.strip()
+
         with self._lock:
-            ctx = self._contexts.get(analysis_id.strip())
-            if not ctx or not ctx.bound_intent:
-                return False
-            ctx.set_intent_approval_id(approval_id)
+            ctx = self._contexts.get(clean_analysis_id)
+            if not ctx:
+                raise ValueError(f"Analysis context '{analysis_id}' not found")
+            if ctx.is_expired:
+                self._contexts.pop(clean_analysis_id, None)
+                raise ValueError(f"Analysis context '{analysis_id}' has expired")
+            if not ctx.bound_intent:
+                raise ValueError(f"Analysis context '{analysis_id}' has no bound tool intent")
+
+            ctx.set_intent_approval_id(clean_appr_id)
             return True
 
     def get_or_create_approval_id(
         self,
         analysis_id: str,
         creator_fn: Any,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Thread-safe deduplication: retrieve existing bound approval_id or atomically create,
         bind, and return a new one via creator_fn under store lock.
+        Validates context exists, is unexpired, and creator_fn produces a valid non-empty string.
         """
+        if not isinstance(analysis_id, str) or not analysis_id.strip():
+            raise ValueError("analysis_id must be a non-empty string")
+        clean_analysis_id = analysis_id.strip()
+
         with self._lock:
-            ctx = self._contexts.get(analysis_id.strip())
-            if not ctx or not ctx.bound_intent:
-                return None
+            ctx = self._contexts.get(clean_analysis_id)
+            if not ctx:
+                raise ValueError(f"Analysis context '{analysis_id}' not found")
+            if ctx.is_expired:
+                self._contexts.pop(clean_analysis_id, None)
+                raise ValueError(f"Analysis context '{analysis_id}' has expired")
+            if not ctx.bound_intent:
+                raise ValueError(f"Analysis context '{analysis_id}' has no bound tool intent")
+
             if ctx.bound_intent.approval_id:
                 return ctx.bound_intent.approval_id
+
             new_id = creator_fn()
-            ctx.set_intent_approval_id(new_id)
-            return new_id
+            if not isinstance(new_id, str) or not new_id.strip():
+                raise ValueError("creator_fn did not return a valid non-empty approval ID string")
+
+            clean_new_id = new_id.strip()
+            ctx.set_intent_approval_id(clean_new_id)
+            return clean_new_id
 
     def purge_expired(self) -> int:
         """Purge all expired analysis contexts."""

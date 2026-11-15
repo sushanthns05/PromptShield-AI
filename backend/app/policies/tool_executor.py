@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from backend.app.policies.approval_manager import ApprovalManager
 from backend.app.policies.tool_authorizer import AuthDecision, ToolAuthorizer, validate_safe_path
-from backend.app.policies.tool_registry import ToolRegistry, UserRole
+from backend.app.policies.tool_registry import ToolRegistry, ToolRiskLevel, UserRole
 from backend.app.privacy.pii_detector import redact_sensitive_data
 from backend.app.rag.context_analyzer import TrustLevel
 
@@ -71,7 +71,25 @@ class ToolExecutor:
         context_trust_level: Union[TrustLevel, str] = TrustLevel.UNTRUSTED,
         approval_id: Optional[str] = None,
         analysis_decision: Optional[str] = None,
+        bound_approval_id: Optional[str] = None,
     ) -> ExecutionResult:
+        # Enforce bound approval ID invariant before authorization or consumption
+        tool = self.registry.get_tool(tool_name)
+        tool_requires_approval = bool(
+            tool and (tool.requires_approval or tool.risk_level in (ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL))
+        )
+        requires_approval = (bound_approval_id is not None) or tool_requires_approval
+
+        if requires_approval:
+            if not approval_id:
+                raise PermissionError(
+                    f"Unauthorized tool execution: REQUIRE_APPROVAL. Tool '{tool_name}' requires human approval, but no approval_id was provided"
+                )
+            if bound_approval_id and approval_id != bound_approval_id:
+                raise PermissionError(
+                    f"Unauthorized tool execution: supplied approval_id '{approval_id}' does not match bound approval '{bound_approval_id}'"
+                )
+
         # 1. Independent backend authorization check
         auth_result = self.authorizer.authorize(
             tool_name=tool_name,
@@ -82,6 +100,7 @@ class ToolExecutor:
             context_trust_level=context_trust_level,
             approval_id=approval_id,
             analysis_decision=analysis_decision,
+            bound_approval_id=bound_approval_id,
         )
 
         if auth_result.decision != AuthDecision.ALLOW:

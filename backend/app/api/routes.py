@@ -499,6 +499,28 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
     client_admin = payload.is_admin is True
     client_approved = payload.approved is True
 
+    # Retrieve any previously bound approval ID on this analysis context
+    bound_approval_id = analysis_store.get_bound_approval_id(payload.analysis_id)
+    if bound_approval_id and payload.approval_id and payload.approval_id != bound_approval_id:
+        logger.warning(
+            "Tool authorization rejected: approval_id mismatch for context '%s' (bound=%s, provided=%s)",
+            ctx.analysis_id,
+            bound_approval_id,
+            payload.approval_id,
+        )
+        return {
+            "decision": "DENY",
+            "tool_name": payload.tool_name,
+            "requester_id": payload.requester_id,
+            "requester_role": payload.requester_role,
+            "risk_level": "HIGH",
+            "reasons": [
+                f"Denied: Approval ID '{payload.approval_id}' does not match approval ID '{bound_approval_id}' bound to analysis context '{ctx.analysis_id}'"
+            ],
+            "approval_id": None,
+            "requires_approval": False,
+        }
+
     # 4-10. Side-effect-free preliminary authorization check
     # Evaluates tool existence, schema, path traversal, risk score, RBAC, trust boundary,
     # and approval state WITHOUT creating pending approvals or binding intent yet.
@@ -513,6 +535,7 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
         client_supplied_admin=client_admin,
         client_supplied_approved=client_approved,
         analysis_decision=ctx.decision,
+        bound_approval_id=bound_approval_id,
     )
 
     # If preliminary check resulted in DENY, NEVER bind the intent and NEVER create an approval
@@ -729,6 +752,74 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
         )
         raise HTTPException(status_code=status_code or 403, detail=intent_err)
 
+    # 4.5. Enforce Bound Approval ID Invariant:
+    # An execution requiring human approval must use exactly the approval ID associated
+    # with the previously authorized analysis context.
+    bound_approval_id = analysis_store.get_bound_approval_id(payload.analysis_id)
+    tool = executor.registry.get_tool(payload.tool_name)
+    tool_requires_approval = bool(
+        tool and (tool.requires_approval or tool.risk_level.value in ("HIGH", "CRITICAL"))
+    )
+    requires_approval = (bound_approval_id is not None) or tool_requires_approval
+
+    if requires_approval:
+        if not payload.approval_id:
+            logger.warning(
+                "Tool execution rejected: context '%s' requires approval, but no approval_id provided",
+                ctx.analysis_id,
+            )
+            event_store.record_event(
+                category="TOOL_EXECUTION",
+                event_type="TOOL_EXECUTION_DENIED",
+                decision="FORBIDDEN",
+                risk_score=ctx.risk_score,
+                requester_id=payload.requester_id,
+                metadata={
+                    "tool_name": payload.tool_name,
+                    "analysis_id": ctx.analysis_id,
+                    "error": "Missing required approval ID",
+                },
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=f"Execution rejected: tool '{payload.tool_name}' requires human approval, but no approval_id was provided",
+            )
+
+        if bound_approval_id and payload.approval_id != bound_approval_id:
+            logger.warning(
+                "Tool execution rejected: approval substitution attempt on context '%s' (bound=%s, attempted=%s)",
+                ctx.analysis_id,
+                bound_approval_id,
+                payload.approval_id,
+            )
+            event_store.record_event(
+                category="TOOL_EXECUTION",
+                event_type="TOOL_EXECUTION_DENIED",
+                decision="FORBIDDEN",
+                risk_score=ctx.risk_score,
+                requester_id=payload.requester_id,
+                metadata={
+                    "tool_name": payload.tool_name,
+                    "analysis_id": ctx.analysis_id,
+                    "error": "Cross-context approval substitution attempt",
+                },
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=f"Execution rejected: approval_id '{payload.approval_id}' does not match the approval token '{bound_approval_id}' bound to analysis context '{ctx.analysis_id}'",
+            )
+
+        if bound_approval_id is None and tool_requires_approval:
+            logger.warning(
+                "Tool execution rejected: tool '%s' requires approval but context '%s' has no bound approval",
+                payload.tool_name,
+                ctx.analysis_id,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=f"Execution rejected: tool '{payload.tool_name}' requires human approval, but context '{ctx.analysis_id}' has no associated approved token",
+            )
+
     # 5. Server-controlled risk score is authoritative
     server_risk_score = ctx.risk_score
 
@@ -742,6 +833,7 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
             context_trust_level=norm_trust,
             approval_id=payload.approval_id,
             analysis_decision=ctx.decision,
+            bound_approval_id=bound_approval_id,
         )
 
         event_store.record_event(

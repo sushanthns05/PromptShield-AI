@@ -7,6 +7,7 @@ from typing import Any, Optional, Union
 import urllib.parse
 
 from backend.app.policies.approval_manager import ApprovalManager, ApprovalStatus
+from backend.app.policies.canonicalization import canonicalize_arguments
 from backend.app.policies.tool_registry import ToolRegistry, ToolRiskLevel, UserRole
 from backend.app.rag.context_analyzer import TrustLevel
 
@@ -154,6 +155,7 @@ class ToolAuthorizer:
         client_supplied_admin: bool = False,
         client_supplied_approved: bool = False,
         analysis_decision: Optional[str] = None,
+        bound_approval_id: Optional[str] = None,
     ) -> AuthorizationResult:
         """
         Side-effect-free evaluation of tool authorization policies.
@@ -172,6 +174,7 @@ class ToolAuthorizer:
             client_supplied_approved=client_supplied_approved,
             analysis_decision=analysis_decision,
             create_approval=False,
+            bound_approval_id=bound_approval_id,
         )
 
     def authorize(
@@ -187,6 +190,7 @@ class ToolAuthorizer:
         client_supplied_approved: bool = False,
         analysis_decision: Optional[str] = None,
         create_approval: bool = True,
+        bound_approval_id: Optional[str] = None,
     ) -> AuthorizationResult:
         reasons: list[str] = []
 
@@ -365,6 +369,19 @@ class ToolAuthorizer:
 
         # 9. Human Approval Workflow Verification
         needs_approval = tool.requires_approval or tool.risk_level in (ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL)
+        if bound_approval_id and approval_id and approval_id != bound_approval_id:
+            reasons.append(
+                f"Denied: Supplied approval ID '{approval_id}' does not match bound approval ID '{bound_approval_id}'"
+            )
+            return AuthorizationResult(
+                decision=AuthDecision.DENY,
+                tool_name=tool_name,
+                requester_id=requester_id,
+                requester_role=role.value,
+                risk_level=tool.risk_level.value,
+                reasons=reasons,
+            )
+
         if needs_approval:
             if approval_id:
                 appr_req = self.approval_manager.get_request(approval_id)
@@ -428,9 +445,20 @@ class ToolAuthorizer:
                         reasons=reasons,
                     )
 
-                # Verify argument integrity against approved arguments
-                if appr_req.arguments != arguments:
-                    reasons.append("Denied: Invocation arguments do not match approved parameters")
+                # Verify argument integrity against approved arguments using unified canonicalization
+                try:
+                    if canonicalize_arguments(appr_req.arguments) != canonicalize_arguments(arguments):
+                        reasons.append("Denied: Invocation arguments do not match approved parameters")
+                        return AuthorizationResult(
+                            decision=AuthDecision.DENY,
+                            tool_name=tool_name,
+                            requester_id=requester_id,
+                            requester_role=role.value,
+                            risk_level=tool.risk_level.value,
+                            reasons=reasons,
+                        )
+                except (TypeError, ValueError) as exc:
+                    reasons.append(f"Denied: Argument canonicalization failed: {exc}")
                     return AuthorizationResult(
                         decision=AuthDecision.DENY,
                         tool_name=tool_name,
