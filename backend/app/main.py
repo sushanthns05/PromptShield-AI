@@ -9,7 +9,11 @@ import uvicorn
 
 from backend.app.api.routes import router
 from backend.app.ml.classifier import PromptClassifier
+from backend.app.policies.approval_manager import ApprovalManager
 from backend.app.policies.risk_engine import RiskEngine
+from backend.app.policies.tool_authorizer import ToolAuthorizer
+from backend.app.policies.tool_executor import ToolExecutor
+from backend.app.policies.tool_registry import ToolRegistry
 from backend.app.rag.context_analyzer import ContextAnalyzer
 from backend.app.rag.context_policy import ContextPolicy
 from backend.app.rag.document_scanner import DocumentScanner
@@ -72,6 +76,24 @@ async def lifespan(app: FastAPI):
     app.state.document_scanner = DocumentScanner(classifier=classifier)
     app.state.context_policy = ContextPolicy()
     app.state.context_analyzer = ContextAnalyzer()
+
+    # Tool authorization and policy enforcement singletons
+    tool_registry = ToolRegistry()
+    approval_manager = ApprovalManager()
+    tool_authorizer = ToolAuthorizer(
+        registry=tool_registry,
+        approval_manager=approval_manager,
+    )
+    tool_executor = ToolExecutor(
+        authorizer=tool_authorizer,
+        approval_manager=approval_manager,
+        registry=tool_registry,
+    )
+
+    app.state.tool_registry = tool_registry
+    app.state.approval_manager = approval_manager
+    app.state.tool_authorizer = tool_authorizer
+    app.state.tool_executor = tool_executor
 
     yield
 
