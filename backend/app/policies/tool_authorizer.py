@@ -85,7 +85,7 @@ class ToolAuthorizer:
     ) -> AuthorizationResult:
         reasons: list[str] = []
 
-        # 1. Security Invariant: Ignore untrusted client-supplied privilege flags
+        # 1. Security Invariant: Neutralize untrusted client-supplied privilege flags
         if client_supplied_admin:
             logger.warning("Ignored client-supplied 'is_admin' claim for requester '%s'", requester_id)
             reasons.append("Security warning: Client-supplied admin flag ignored")
@@ -234,6 +234,20 @@ class ToolAuthorizer:
                         risk_level=tool.risk_level.value,
                         approval_id=approval_id,
                         requires_approval=True,
+                        reasons=reasons,
+                    )
+
+                # SEC-01 FIX: Strict Requester Binding verification (prevent token hijacking)
+                if appr_req.requester_id != requester_id:
+                    reasons.append(
+                        f"Denied: Approval token '{approval_id}' is bound to requester '{appr_req.requester_id}', not '{requester_id}'"
+                    )
+                    return AuthorizationResult(
+                        decision=AuthDecision.DENY,
+                        tool_name=tool_name,
+                        requester_id=requester_id,
+                        requester_role=role.value,
+                        risk_level=tool.risk_level.value,
                         reasons=reasons,
                     )
 

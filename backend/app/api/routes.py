@@ -294,13 +294,22 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
     client_admin = payload.is_admin is True
     client_approved = payload.approved is True
 
+    # Security Invariant: External clients cannot unilaterally declare TRUSTED context
+    context_trust = payload.context_trust_level
+    if context_trust.strip().upper() == "TRUSTED":
+        logger.warning(
+            "Client attempted to assert TRUSTED context on external API for requester '%s'. Overriding to UNTRUSTED.",
+            payload.requester_id,
+        )
+        context_trust = "UNTRUSTED"
+
     result = authorizer.authorize(
         tool_name=payload.tool_name,
         arguments=payload.arguments,
         requester_id=payload.requester_id,
         requester_role=payload.requester_role,
         risk_score=payload.risk_score,
-        context_trust_level=payload.context_trust_level,
+        context_trust_level=context_trust,
         approval_id=payload.approval_id,
         client_supplied_admin=client_admin,
         client_supplied_approved=client_approved,
@@ -328,6 +337,15 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
     if executor is None:
         executor = ToolExecutor()
 
+    # Security Invariant: External clients cannot unilaterally declare TRUSTED context
+    context_trust = payload.context_trust_level
+    if context_trust.strip().upper() == "TRUSTED":
+        logger.warning(
+            "Client attempted to assert TRUSTED context on external API for requester '%s'. Overriding to UNTRUSTED.",
+            payload.requester_id,
+        )
+        context_trust = "UNTRUSTED"
+
     try:
         exec_result = executor.execute(
             tool_name=payload.tool_name,
@@ -335,7 +353,7 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
             requester_id=payload.requester_id,
             requester_role=payload.requester_role,
             risk_score=payload.risk_score,
-            context_trust_level=payload.context_trust_level,
+            context_trust_level=context_trust,
             approval_id=payload.approval_id,
         )
         return exec_result.to_dict()

@@ -243,3 +243,27 @@ def test_tampered_arguments_rejected_with_approval(authorizer, approval_manager)
     )
     assert res.decision == AuthDecision.DENY
     assert "arguments do not match" in res.reasons[0]
+
+
+def test_approval_token_cannot_be_reused_by_different_requester(authorizer, approval_manager):
+    """Regression test: Approval token hijacking is denied by authorizer."""
+    args = {"recipient": "alice@corp.com", "subject": "A", "body": "B"}
+    req = approval_manager.create_request(
+        tool_name="send_email",
+        arguments=args,
+        requester_id="legitimate-dev",
+        requester_role=UserRole.DEVELOPER,
+        risk_level=ToolRegistry().get_tool("send_email").risk_level,
+    )
+    approval_manager.approve(req.approval_id, approver_id="admin-01", approver_role=UserRole.ADMIN)
+
+    # Attacker tries to use the approval token with their own requester_id
+    res = authorizer.authorize(
+        tool_name="send_email",
+        arguments=args,
+        requester_id="attacker-dev",
+        requester_role=UserRole.DEVELOPER,
+        approval_id=req.approval_id,
+    )
+    assert res.decision == AuthDecision.DENY
+    assert any("bound to requester 'legitimate-dev', not 'attacker-dev'" in r for r in res.reasons)

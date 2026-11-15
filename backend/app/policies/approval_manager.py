@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import json
 import logging
+import threading
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -63,7 +64,7 @@ class ApprovalRequest:
 
 class ApprovalManager:
     """
-    In-memory human approval management workflow.
+    Thread-safe in-memory human approval management workflow.
 
     LIMITATION NOTICE: This implementation stores approval requests in-memory.
     Server restarts will clear pending approvals. In production, this must be backed
@@ -73,6 +74,7 @@ class ApprovalManager:
     def __init__(self, default_ttl_seconds: int = 300):
         self.default_ttl_seconds = default_ttl_seconds
         self._approvals: dict[str, ApprovalRequest] = {}
+        self._lock = threading.RLock()
 
     @staticmethod
     def _canonicalize_args(args: dict[str, Any]) -> str:
@@ -104,7 +106,9 @@ class ApprovalManager:
             expires_at=expires_at,
             status=ApprovalStatus.PENDING,
         )
-        self._approvals[approval_id] = req
+        with self._lock:
+            self._approvals[approval_id] = req
+
         logger.info(
             "Created approval request: %s for tool '%s' by requester '%s' (expires in %ds)",
             approval_id,
@@ -115,10 +119,11 @@ class ApprovalManager:
         return req
 
     def get_request(self, approval_id: str) -> Optional[ApprovalRequest]:
-        req = self._approvals.get(approval_id)
-        if req and req.status == ApprovalStatus.PENDING and req.is_expired:
-            req.status = ApprovalStatus.EXPIRED
-        return req
+        with self._lock:
+            req = self._approvals.get(approval_id)
+            if req and req.status == ApprovalStatus.PENDING and req.is_expired:
+                req.status = ApprovalStatus.EXPIRED
+            return req
 
     def approve(
         self,
@@ -127,33 +132,34 @@ class ApprovalManager:
         approver_role: UserRole,
         reason: Optional[str] = None,
     ) -> ApprovalRequest:
-        req = self.get_request(approval_id)
-        if not req:
-            raise KeyError(f"Approval request '{approval_id}' not found")
+        with self._lock:
+            req = self.get_request(approval_id)
+            if not req:
+                raise KeyError(f"Approval request '{approval_id}' not found")
 
-        if req.is_expired or req.status == ApprovalStatus.EXPIRED:
-            req.status = ApprovalStatus.EXPIRED
-            raise ValueError("Cannot approve: approval request has expired")
+            if req.is_expired or req.status == ApprovalStatus.EXPIRED:
+                req.status = ApprovalStatus.EXPIRED
+                raise ValueError("Cannot approve: approval request has expired")
 
-        if req.status != ApprovalStatus.PENDING:
-            raise ValueError(f"Cannot approve: request is already {req.status.value}")
+            if req.status != ApprovalStatus.PENDING:
+                raise ValueError(f"Cannot approve: request is already {req.status.value}")
 
-        # Approver authorization: Only ADMIN can approve high/critical risk tools
-        if req.risk_level in (ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL) and approver_role != UserRole.ADMIN:
-            raise PermissionError("Only users with role ADMIN can approve high/critical risk tools")
+            # Approver authorization: Only ADMIN can approve high/critical risk tools
+            if req.risk_level in (ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL) and approver_role != UserRole.ADMIN:
+                raise PermissionError("Only users with role ADMIN can approve high/critical risk tools")
 
-        # Separation of duties: Requester cannot self-approve privileged operations
-        if req.requester_id == approver_id:
-            raise PermissionError("Separation of duties violation: Requester cannot self-approve tool action")
+            # Separation of duties: Requester cannot self-approve privileged operations
+            if req.requester_id == approver_id:
+                raise PermissionError("Separation of duties violation: Requester cannot self-approve tool action")
 
-        now = datetime.now(timezone.utc)
-        req.status = ApprovalStatus.APPROVED
-        req.decided_by = approver_id
-        req.decided_at = now
-        req.decision_reason = reason or "Approved by authorized reviewer"
+            now = datetime.now(timezone.utc)
+            req.status = ApprovalStatus.APPROVED
+            req.decided_by = approver_id
+            req.decided_at = now
+            req.decision_reason = reason or "Approved by authorized reviewer"
 
-        logger.info("Approval '%s' APPROVED by '%s' (%s)", approval_id, approver_id, approver_role.value)
-        return req
+            logger.info("Approval '%s' APPROVED by '%s' (%s)", approval_id, approver_id, approver_role.value)
+            return req
 
     def reject(
         self,
@@ -162,61 +168,72 @@ class ApprovalManager:
         approver_role: UserRole,
         reason: Optional[str] = None,
     ) -> ApprovalRequest:
-        req = self.get_request(approval_id)
-        if not req:
-            raise KeyError(f"Approval request '{approval_id}' not found")
+        with self._lock:
+            req = self.get_request(approval_id)
+            if not req:
+                raise KeyError(f"Approval request '{approval_id}' not found")
 
-        if req.is_expired or req.status == ApprovalStatus.EXPIRED:
-            req.status = ApprovalStatus.EXPIRED
-            raise ValueError("Cannot reject: approval request has expired")
+            if req.is_expired or req.status == ApprovalStatus.EXPIRED:
+                req.status = ApprovalStatus.EXPIRED
+                raise ValueError("Cannot reject: approval request has expired")
 
-        if req.status != ApprovalStatus.PENDING:
-            raise ValueError(f"Cannot reject: request is already {req.status.value}")
+            if req.status != ApprovalStatus.PENDING:
+                raise ValueError(f"Cannot reject: request is already {req.status.value}")
 
-        now = datetime.now(timezone.utc)
-        req.status = ApprovalStatus.REJECTED
-        req.decided_by = approver_id
-        req.decided_at = now
-        req.decision_reason = reason or "Rejected by authorized reviewer"
+            now = datetime.now(timezone.utc)
+            req.status = ApprovalStatus.REJECTED
+            req.decided_by = approver_id
+            req.decided_at = now
+            req.decision_reason = reason or "Rejected by authorized reviewer"
 
-        logger.info("Approval '%s' REJECTED by '%s' (%s)", approval_id, approver_id, approver_role.value)
-        return req
+            logger.info("Approval '%s' REJECTED by '%s' (%s)", approval_id, approver_id, approver_role.value)
+            return req
 
     def consume(
         self,
         approval_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        requester_id: Optional[str] = None,
     ) -> bool:
         """
-        Consume a valid approval token for a single execution.
-        Enforces strict parameter binding to prevent approval replay or argument tampering.
+        Thread-safe atomic consumption of a valid approval token for a single execution.
+        Enforces strict parameter and requester binding to prevent approval replay,
+        token hijacking, or argument tampering.
         """
-        req = self.get_request(approval_id)
-        if not req:
-            raise KeyError(f"Approval request '{approval_id}' not found")
+        with self._lock:
+            req = self.get_request(approval_id)
+            if not req:
+                raise KeyError(f"Approval request '{approval_id}' not found")
 
-        if req.status == ApprovalStatus.CONSUMED:
-            raise ValueError(f"Approval token '{approval_id}' has already been consumed (replay attack prevention)")
+            if req.status == ApprovalStatus.CONSUMED:
+                raise ValueError(f"Approval token '{approval_id}' has already been consumed (replay attack prevention)")
 
-        if req.is_expired or req.status == ApprovalStatus.EXPIRED:
-            req.status = ApprovalStatus.EXPIRED
-            raise ValueError(f"Approval token '{approval_id}' has expired")
+            if req.is_expired or req.status == ApprovalStatus.EXPIRED:
+                req.status = ApprovalStatus.EXPIRED
+                raise ValueError(f"Approval token '{approval_id}' has expired")
 
-        if req.status != ApprovalStatus.APPROVED:
-            raise ValueError(f"Approval token '{approval_id}' is not in APPROVED state (current: {req.status.value})")
+            if req.status != ApprovalStatus.APPROVED:
+                raise ValueError(f"Approval token '{approval_id}' is not in APPROVED state (current: {req.status.value})")
 
-        # Verify tool binding
-        if req.tool_name != tool_name:
-            raise ValueError(f"Approval token bound to '{req.tool_name}', not requested tool '{tool_name}'")
+            # Verify requester binding (prevent token hijacking)
+            if requester_id is not None and req.requester_id != requester_id:
+                raise ValueError(
+                    f"Approval token '{approval_id}' is bound to requester '{req.requester_id}', not '{requester_id}'"
+                )
 
-        # Verify argument binding
-        expected_canonical = self._canonicalize_args(req.arguments)
-        actual_canonical = self._canonicalize_args(arguments)
-        if expected_canonical != actual_canonical:
-            raise ValueError("Approval token argument mismatch: arguments have been modified since approval")
+            # Verify tool binding
+            if req.tool_name != tool_name:
+                raise ValueError(f"Approval token bound to '{req.tool_name}', not requested tool '{tool_name}'")
 
-        req.status = ApprovalStatus.CONSUMED
-        req.consumed_at = datetime.now(timezone.utc)
-        logger.info("Approval token '%s' successfully consumed for tool '%s'", approval_id, tool_name)
-        return True
+            # Verify argument binding
+            expected_canonical = self._canonicalize_args(req.arguments)
+            actual_canonical = self._canonicalize_args(arguments)
+            if expected_canonical != actual_canonical:
+                raise ValueError("Approval token argument mismatch: arguments have been modified since approval")
+
+            # Atomic transition to CONSUMED
+            req.status = ApprovalStatus.CONSUMED
+            req.consumed_at = datetime.now(timezone.utc)
+            logger.info("Approval token '%s' successfully consumed for tool '%s'", approval_id, tool_name)
+            return True

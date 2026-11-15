@@ -363,3 +363,70 @@ def test_api_approval_lifecycle_and_execution(api_client):
     # 5. Replay attempt with already-consumed approval -> 400 or 403
     status, replay_body, _ = api_client.post("/api/v1/tools/execute", json_data=exec_payload)
     assert status in (400, 403)
+
+
+def test_executor_denies_hijacked_approval_token(executor, approval_manager):
+    """Regression test: ToolExecutor rejects token consumption by unauthorized requester."""
+    args = {"recipient": "boss@corp.com", "subject": "Quarterly", "body": "Report"}
+    req = approval_manager.create_request(
+        tool_name="send_email",
+        arguments=args,
+        requester_id="victim-user",
+        requester_role=UserRole.DEVELOPER,
+        risk_level=ToolRegistry().get_tool("send_email").risk_level,
+    )
+    approval_manager.approve(req.approval_id, approver_id="admin-01", approver_role=UserRole.ADMIN)
+
+    with pytest.raises(PermissionError, match="bound to requester 'victim-user'"):
+        executor.execute(
+            tool_name="send_email",
+            arguments=args,
+            requester_id="attacker-user",
+            requester_role=UserRole.DEVELOPER,
+            approval_id=req.approval_id,
+        )
+
+
+def test_executor_sensitive_data_redacted_in_simulated_output(executor, registry, approval_manager):
+    """Regression test: ToolExecutor output redacts sensitive data like API keys."""
+    registry.enable_tool("execute_command")
+    cmd_args = {"command": "deploy --api-key=sk-123456789012345678901234"}
+    req = approval_manager.create_request(
+        tool_name="execute_command",
+        arguments=cmd_args,
+        requester_id="admin-01",
+        requester_role=UserRole.ADMIN,
+        risk_level=registry.get_tool("execute_command").risk_level,
+    )
+    approval_manager.approve(req.approval_id, approver_id="sec-admin", approver_role=UserRole.ADMIN)
+
+    res = executor.execute(
+        tool_name="execute_command",
+        arguments=cmd_args,
+        requester_id="admin-01",
+        requester_role=UserRole.ADMIN,
+        context_trust_level="TRUSTED",
+        approval_id=req.approval_id,
+    )
+    assert "sk-123456789012345678901234" not in res.result["command"]
+    assert "sk-123456789012345678901234" not in res.result["stdout"]
+    assert "[REDACTED_OPENAI_API_KEY]" in res.result["command"]
+    assert "[REDACTED_OPENAI_API_KEY]" in res.result["stdout"]
+
+
+def test_api_client_cannot_assert_trusted_context_for_critical_tool(api_client):
+    """Regression test: External API caller cannot bypass untrusted context check for critical tools."""
+    # Ensure delete_file is enabled in the app's tool registry for this test
+    app.state.tool_registry.enable_tool("delete_file")
+
+    payload = {
+        "tool_name": "delete_file",
+        "arguments": {"filepath": "production.db"},
+        "requester_id": "admin-01",
+        "requester_role": "ADMIN",
+        "context_trust_level": "TRUSTED",  # Client attempts to spoof trusted context
+    }
+    status, body, _ = api_client.post("/api/v1/tools/authorize", json_data=payload)
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert any("Critical tool invocation rejected from untrusted context" in r for r in body["reasons"])

@@ -212,3 +212,72 @@ def test_consume_approval_tool_name_mismatch_rejected(approval_manager):
 
     with pytest.raises(ValueError, match="bound to 'read_file'"):
         approval_manager.consume(req.approval_id, "delete_file", args)
+
+
+def test_consume_approval_requester_mismatch_rejected(approval_manager):
+    """Regression test: Approval token cannot be hijacked by a different requester."""
+    args = {"recipient": "alice@example.com", "subject": "Test", "body": "Body"}
+    req = approval_manager.create_request(
+        tool_name="send_email",
+        arguments=args,
+        requester_id="victim-user",
+        requester_role=UserRole.DEVELOPER,
+        risk_level=ToolRiskLevel.HIGH,
+    )
+    approval_manager.approve(
+        approval_id=req.approval_id,
+        approver_id="admin-01",
+        approver_role=UserRole.ADMIN,
+    )
+
+    with pytest.raises(ValueError, match="bound to requester 'victim-user'"):
+        approval_manager.consume(
+            approval_id=req.approval_id,
+            tool_name="send_email",
+            arguments=args,
+            requester_id="attacker-user",
+        )
+
+
+def test_concurrent_approval_token_consumption_is_thread_safe(approval_manager):
+    """Regression test: TOCTOU race condition prevention during concurrent token consumption."""
+    import concurrent.futures
+
+    args = {"recipient": "user@example.com", "subject": "Notice", "body": "Hello"}
+    req = approval_manager.create_request(
+        tool_name="send_email",
+        arguments=args,
+        requester_id="dev-01",
+        requester_role=UserRole.DEVELOPER,
+        risk_level=ToolRiskLevel.HIGH,
+    )
+    approval_manager.approve(
+        approval_id=req.approval_id,
+        approver_id="admin-01",
+        approver_role=UserRole.ADMIN,
+    )
+
+    success_count = 0
+    failure_count = 0
+
+    def try_consume():
+        try:
+            return approval_manager.consume(
+                approval_id=req.approval_id,
+                tool_name="send_email",
+                arguments=args,
+                requester_id="dev-01",
+            )
+        except ValueError:
+            return False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(try_consume) for _ in range(10)]
+        for f in concurrent.futures.as_completed(futures):
+            if f.result() is True:
+                success_count += 1
+            else:
+                failure_count += 1
+
+    assert success_count == 1
+    assert failure_count == 9

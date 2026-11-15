@@ -101,6 +101,7 @@ class ToolExecutor:
                 approval_id=approval_id,
                 tool_name=tool_name,
                 arguments=arguments,
+                requester_id=requester_id,
             )
 
         execution_id = f"exec-{uuid4().hex[:12]}"
@@ -129,9 +130,10 @@ class ToolExecutor:
     def _run_simulated_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """
         Dispatches safely to simulated handlers without executing arbitrary commands.
+        Sensitive data in arguments is redacted to prevent accidental leakage in results.
         """
         if name == "search_knowledge_base":
-            query = args.get("query", "")
+            query = redact_sensitive_data(str(args.get("query", "")))
             return {
                 "matches": [
                     {
@@ -145,7 +147,7 @@ class ToolExecutor:
             }
 
         elif name == "get_weather":
-            loc = args.get("location", "Unknown")
+            loc = redact_sensitive_data(str(args.get("location", "Unknown")))
             return {
                 "location": loc,
                 "temperature_c": 22,
@@ -155,21 +157,22 @@ class ToolExecutor:
 
         elif name == "read_file":
             filepath = str(args.get("filepath", ""))
+            redacted_path = redact_sensitive_data(filepath)
             # Prevent directory traversal simulation
             if ".." in filepath:
                 return {
                     "error": "Directory traversal characters '..' are forbidden",
-                    "filepath": filepath,
+                    "filepath": redacted_path,
                 }
             return {
-                "filepath": filepath,
-                "simulated_content": f"# Content of {filepath}\n[Simulated safe read output]",
+                "filepath": redacted_path,
+                "simulated_content": f"# Content of {redacted_path}\n[Simulated safe read output]",
                 "size_bytes": 1024,
             }
 
         elif name == "send_email":
-            recipient = args.get("recipient", "")
-            subject = args.get("subject", "")
+            recipient = redact_sensitive_data(str(args.get("recipient", "")))
+            subject = redact_sensitive_data(str(args.get("subject", "")))
             return {
                 "status": "queued",
                 "recipient": recipient,
@@ -178,7 +181,7 @@ class ToolExecutor:
             }
 
         elif name == "delete_file":
-            filepath = str(args.get("filepath", ""))
+            filepath = redact_sensitive_data(str(args.get("filepath", "")))
             return {
                 "status": "deleted",
                 "filepath": filepath,
@@ -187,11 +190,12 @@ class ToolExecutor:
 
         elif name == "execute_command":
             cmd = str(args.get("command", ""))
+            redacted_cmd = redact_sensitive_data(cmd)
             # SECURITY GUARANTEE: Never invoke subprocess or shell!
             return {
                 "simulated": True,
-                "command": cmd,
-                "stdout": f"[SIMULATED SANDBOX OUTPUT for: {cmd}]",
+                "command": redacted_cmd,
+                "stdout": f"[SIMULATED SANDBOX OUTPUT for: {redacted_cmd}]",
                 "exit_code": 0,
             }
 
