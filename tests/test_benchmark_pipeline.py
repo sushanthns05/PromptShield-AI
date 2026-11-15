@@ -101,3 +101,20 @@ def test_adversarial_scenarios_structure(pipeline):
     for sc_name, sc_data in scenarios.items():
         assert "expected" in sc_data
         assert "gateway_threat_flag" in sc_data
+
+
+def test_benchmark_reproducibility_report_validity():
+    """Verify that the independent reproducibility report exists and confirms zero discrepancies."""
+    rep_file = RESULTS_DIR / "reproducibility_report.json"
+    assert rep_file.exists(), "reproducibility_report.json must exist"
+
+    with open(rep_file, "r", encoding="utf-8") as f:
+        rep = json.load(f)
+
+    assert rep["is_perfectly_reproducible"] is True
+    assert rep["discrepancy_count"] == 0
+    assert len(rep["discrepancies"]) == 0
+    assert "environment" in rep
+    assert "dataset_inventory" in rep
+    assert rep["environment"]["random_seed"] == 42
+

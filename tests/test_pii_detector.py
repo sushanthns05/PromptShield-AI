@@ -173,3 +173,64 @@ def test_short_and_malformed_tokens_not_detected():
     for sample in malformed_samples:
         findings = detect_sensitive_data(sample)
         assert len(findings) == 0, f"Malformed sample '{sample}' was falsely detected as sensitive: {findings}"
+
+
+def test_detect_generalized_credential_formats():
+    """Verify detection of GitHub PATs, Slack tokens, Stripe keys, Google API keys, and generic assignments."""
+    ghp_sample = "gh" + "p_" + "123456789012345678901234567890123456"
+    gh_pat_sample = "github_" + "pat_" + "11AAAAAAA0123456789012_abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12"
+    xoxb_sample = "xo" + "xb-" + "123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+    xoxp_sample = "xo" + "xp-" + "987654321098-987654321098-zyxwvutsrqponmlkjihgfedc"
+    stripe_live_sample = "sk_" + "live_" + "51Abcdefghijklmnopqrstuvwx123456"
+    stripe_test_sample = "sk_" + "test_" + "51Abcdefghijklmnopqrstuvwx123456"
+    google_sample = "AI" + "zaSyD-" + "1234567890abcdefghijklmnopqrstuv"
+
+    test_cases = [
+        (ghp_sample, "GITHUB_TOKEN", "documented"),
+        (gh_pat_sample, "GITHUB_TOKEN", "documented"),
+        (xoxb_sample, "SLACK_TOKEN", "documented"),
+        (xoxp_sample, "SLACK_TOKEN", "documented"),
+        (stripe_live_sample, "STRIPE_API_KEY", "documented"),
+        (stripe_test_sample, "STRIPE_API_KEY", "documented"),
+        (google_sample, "GOOGLE_API_KEY", "documented"),
+        ("api_key = 'secKey1234567890abcdef'", "GENERIC_SECRET", "generic"),
+        ('secret_token: "supersecrettoken998877"', "GENERIC_SECRET", "generic"),
+    ]
+
+    for snippet, expected_type, expected_format in test_cases:
+        findings = detect_sensitive_data(snippet)
+        matching = [f for f in findings if f["type"] == expected_type]
+        assert len(matching) >= 1, f"Expected {expected_type} in '{snippet}', found {findings}"
+        assert matching[0]["category"] == "SECRET"
+        assert matching[0]["format"] == expected_format
+
+        redacted = redact_sensitive_data(snippet)
+        assert expected_type in redacted
+        assert matching[0]["value"] not in redacted
+
+
+def test_unseen_benign_lookalikes_not_detected():
+    """Verify unseen benign patterns and code snippets are not falsely flagged as secrets."""
+    unseen_lookalikes = [
+        "sk-stream",
+        "sk-bundle",
+        "sk-cluster",
+        "sk-network",
+        "sk-server",
+        "sk-client",
+        "sk-prod",
+        "sk-dev",
+        "sk-9",
+        "AKIA-PROD-KEY",
+        "AKIAMOCK",
+        "const sk = 42;",
+        "sk_lookup = {}",
+        "let sk = function() { return 10; };",
+        "var apiKey = null;",
+    ]
+
+    for item in unseen_lookalikes:
+        findings = detect_sensitive_data(item)
+        assert len(findings) == 0, f"Unseen lookalike '{item}' falsely triggered detection: {findings}"
+        assert redact_sensitive_data(item) == item
+

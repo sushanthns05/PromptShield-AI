@@ -372,3 +372,58 @@ def test_legitimate_relative_paths_allowed(authorizer):
             requester_role=UserRole.DEVELOPER,
         )
         assert res.decision == AuthDecision.ALLOW
+
+
+def test_tool_arguments_schema_validation_unknown_args_rejected(authorizer):
+    """Unknown or extra arguments must be rejected by Pydantic schema."""
+    res = authorizer.authorize(
+        tool_name="search_knowledge_base",
+        arguments={"query": "test query", "unauthorized_extra_arg": "injected"},
+        requester_id="user-01",
+        requester_role=UserRole.USER,
+    )
+    assert res.decision == AuthDecision.DENY
+    assert any("Extra inputs are not permitted" in r or "extra fields" in r for r in res.reasons)
+
+
+def test_tool_arguments_schema_validation_type_mismatch_rejected(authorizer):
+    """Argument type mismatches (e.g., int/list where string expected) must be rejected."""
+    # Integer instead of string
+    res = authorizer.authorize(
+        tool_name="read_file",
+        arguments={"filepath": 12345},
+        requester_id="dev-01",
+        requester_role=UserRole.DEVELOPER,
+    )
+    assert res.decision == AuthDecision.DENY
+    assert any("Input should be a valid string" in r for r in res.reasons)
+
+    # List instead of string
+    res_weather = authorizer.authorize(
+        tool_name="get_weather",
+        arguments={"location": ["San Francisco", "CA"]},
+        requester_id="user-01",
+        requester_role=UserRole.USER,
+    )
+    assert res_weather.decision == AuthDecision.DENY
+    assert any("Input should be a valid string" in r for r in res_weather.reasons)
+
+
+def test_tool_arguments_nested_path_traversal_denied(authorizer):
+    """Arbitrary nested JSON payloads containing traversal sequences must be denied."""
+    nested_payloads = [
+        {"config": {"filepath": "../secret.txt"}},
+        {"parameters": {"nested": {"dir": "..\\windows\\system32"}}},
+        {"items": [{"path": "../../etc/shadow"}]},
+        {"data": {"file": "valid.txt\x00malicious.sh"}},
+    ]
+    for payload in nested_payloads:
+        res = authorizer.authorize(
+            tool_name="read_file",
+            arguments=payload,
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+        assert res.decision == AuthDecision.DENY
+        assert any("Path traversal" in r or "Null byte" in r or "Invalid arguments" in r for r in res.reasons)
+

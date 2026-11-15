@@ -41,12 +41,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 0.029,
-        "median_ms": 0.023,
-        "p95_ms": 0.057,
-        "p99_ms": 0.084,
-        "min_ms": 0.013,
-        "max_ms": 0.125,
+        "mean_ms": 0.033,
+        "median_ms": 0.029,
+        "p95_ms": 0.064,
+        "p99_ms": 0.076,
+        "min_ms": 0.014,
+        "max_ms": 0.09,
         "sample_count": 215
       },
       "per_category_metrics": {
@@ -253,12 +253,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 1.528,
-        "median_ms": 1.39,
-        "p95_ms": 2.411,
-        "p99_ms": 2.686,
-        "min_ms": 1.206,
-        "max_ms": 2.851,
+        "mean_ms": 1.88,
+        "median_ms": 1.79,
+        "p95_ms": 2.662,
+        "p99_ms": 3.046,
+        "min_ms": 1.224,
+        "max_ms": 3.561,
         "sample_count": 215
       },
       "per_category_metrics": {
@@ -465,12 +465,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 1.196,
-        "median_ms": 1.312,
-        "p95_ms": 2.368,
-        "p99_ms": 2.817,
-        "min_ms": 0.019,
-        "max_ms": 3.172,
+        "mean_ms": 1.457,
+        "median_ms": 1.695,
+        "p95_ms": 2.494,
+        "p99_ms": 2.869,
+        "min_ms": 0.023,
+        "max_ms": 4.103,
         "sample_count": 215
       },
       "per_category_metrics": {
@@ -653,36 +653,36 @@
     },
     "Config_D_Gateway": {
       "classification_metrics": {
-        "accuracy": 0.8,
-        "precision": 0.9919,
-        "recall": 0.7455,
-        "f1": 0.8512,
+        "accuracy": 0.8047,
+        "precision": 0.992,
+        "recall": 0.7515,
+        "f1": 0.8552,
         "false_positive_rate": 0.02,
-        "false_negative_rate": 0.2545,
-        "true_positive_rate": 0.7455,
+        "false_negative_rate": 0.2485,
+        "true_positive_rate": 0.7515,
         "true_negative_rate": 0.98,
-        "true_positives": 123,
+        "true_positives": 124,
         "true_negatives": 49,
         "false_positives": 1,
-        "false_negatives": 42,
+        "false_negatives": 41,
         "confusion_matrix": [
           [
             49,
             1
           ],
           [
-            42,
-            123
+            41,
+            124
           ]
         ]
       },
       "latency_metrics": {
-        "mean_ms": 1.457,
-        "median_ms": 1.447,
-        "p95_ms": 2.537,
-        "p99_ms": 2.976,
-        "min_ms": 0.018,
-        "max_ms": 4.509,
+        "mean_ms": 1.819,
+        "median_ms": 1.895,
+        "p95_ms": 2.737,
+        "p99_ms": 3.08,
+        "min_ms": 0.025,
+        "max_ms": 3.356,
         "sample_count": 215
       },
       "per_category_metrics": {
@@ -837,26 +837,26 @@
           "sample_count": 25
         },
         "tool_abuse": {
-          "accuracy": 0.95,
+          "accuracy": 1.0,
           "precision": 1.0,
-          "recall": 0.95,
-          "f1": 0.9744,
+          "recall": 1.0,
+          "f1": 1.0,
           "false_positive_rate": 0.0,
-          "false_negative_rate": 0.05,
-          "true_positive_rate": 0.95,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
           "true_negative_rate": 0.0,
-          "true_positives": 19,
+          "true_positives": 20,
           "true_negatives": 0,
           "false_positives": 0,
-          "false_negatives": 1,
+          "false_negatives": 0,
           "confusion_matrix": [
             [
               0,
               0
             ],
             [
-              1,
-              19
+              0,
+              20
             ]
           ],
           "sample_count": 20
@@ -877,13 +877,13 @@
   "tool_policy_evaluation": {
     "total_tool_requests": 20,
     "unauthorized_requests": 20,
-    "auth_layer_deny_count": 19,
+    "auth_layer_deny_count": 20,
     "auth_layer_require_approval_count": 0,
-    "auth_layer_blocking_rate": 0.95,
-    "auth_layer_strict_deny_rate": 0.95,
-    "auth_layer_allowed_unauthorized": 1,
+    "auth_layer_blocking_rate": 1.0,
+    "auth_layer_strict_deny_rate": 1.0,
+    "auth_layer_allowed_unauthorized": 0,
     "sandbox_executor_interception_count": 0,
-    "end_to_end_system_blocking_rate": 0.95,
+    "end_to_end_system_blocking_rate": 1.0,
     "approval_bypass_rate": 0.0
   }
 }

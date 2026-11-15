@@ -92,6 +92,11 @@ class RiskEngine:
             "SYNTHETIC_API_KEY",
             "AWS_ACCESS_KEY",
             "SYNTHETIC_AWS_KEY",
+            "GITHUB_TOKEN",
+            "SLACK_TOKEN",
+            "STRIPE_API_KEY",
+            "GOOGLE_API_KEY",
+            "GENERIC_SECRET",
             "PASSWORD",
         }
         pii_types = {"EMAIL", "PHONE"}

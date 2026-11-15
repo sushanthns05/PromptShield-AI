@@ -119,17 +119,29 @@ All configurations are evaluated against identical held-out test splits without 
 
 ## 7. Day 8.5 Security Hardening Architecture
 
-Following the Day 8 Independent Audit, two major architectural security hardenings were introduced:
+Following the Day 8 Independent Audit, three major architectural security hardenings were introduced:
 
 ### 7.1 Multi-Tier Credential & Secret Taxonomy
 To overcome rigid regex length constraints without matching benign development terms, `backend/app/privacy/pii_detector.py` establishes a formal format taxonomy:
-1. **Documented Formats (`OPENAI_API_KEY`, `AWS_ACCESS_KEY`):** Standard production formats matching documented provider specifications (OpenAI legacy `sk-[A-Za-z0-9]{20,}`, modern project `sk-proj-...`, and standard AWS IAM 20-char `AKIA[0-9A-Z]{16}`).
+1. **Documented Production Formats:**
+   - OpenAI API Keys (`OPENAI_API_KEY`): `sk-[A-Za-z0-9]{20,}` legacy and modern project tokens (`sk-proj-...`, `sk-admin-...`, `sk-svcacct-...`).
+   - AWS IAM & STS Keys (`AWS_ACCESS_KEY`): standard 20-character `AKIA[0-9A-Z]{16}` and temporary credentials `ASIA[0-9A-Z]{16}`.
+   - GitHub Access Tokens (`GITHUB_TOKEN`): classic tokens (`ghp_*`, `gho_*`, `ghu_*`, `ghs_*`, `ghr_*`) and fine-grained personal access tokens (`github_pat_*`).
+   - Slack Tokens (`SLACK_TOKEN`): Bot and user authentication tokens (`xoxb-*`, `xoxp-*`).
+   - Stripe API Keys (`STRIPE_API_KEY`): Live and test secret/restricted keys (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`).
+   - Google API Keys (`GOOGLE_API_KEY`): Google Cloud, Maps, and AI Studio keys (`AIza*`).
 2. **Synthetic / Dev Formats (`SYNTHETIC_API_KEY`, `SYNTHETIC_AWS_KEY`):** Synthetic test/benchmark formats (e.g. `sk-[A-Za-z0-9]{12,19}` containing uppercase and numeric tokens, MinIO/custom S3-compatible `AKIA[0-9A-Z]{17,28}`).
-3. **Benign Lookalike Negative Constraints:** Explicitly excludes lowercase words, short identifiers, and library names (`sk-learn`, `sk-model`, `sk-image`, `sk-pipeline`, `AKIA123`), preventing false positives on machine learning documentation.
+3. **Generic Secret Assignments (`GENERIC_SECRET`):** Catches configuration assignments such as `api_key = "..."`, `secret_token = '...'`, `access_token: "..."`.
+4. **Benign Lookalike Negative Constraints:** Explicitly excludes lowercase words, short identifiers, and library names (`sk-learn`, `sk-model`, `sk-image`, `sk-pipeline`, `sk-stream`, `sk-bundle`, `sk-cluster`, `sk-network`, `sk-server`, `sk-client`, `sk-prod`, `sk-dev`, `sk-9`, `AKIA-PROD-KEY`, `AKIAMOCK`), preventing false positives on machine learning code, pipelines, and technical documentation.
 
-### 7.2 Two-Layer Tool Authorization & Sandbox Traversal Defense
-1. **Authorization Layer (`ToolAuthorizer.validate_safe_path`):** Validates all path-like arguments (`filepath`, `path`, `filename`, etc.) prior to dispatch. Intercepts directory traversal (`../`), multi-level escapes, recursive URL encoding (`%2e%2e%2f`, `%252e%252e%252f`), backslash sequences (`..\`), null-byte injection (`\0`, `%00`), and symlink escapes outside the allowed base directory.
-2. **Execution Sandbox Layer (`ToolExecutor._run_simulated_tool`):** Independently re-validates path safety in the execution simulator. If the authorization layer is mocked or bypassed, the sandbox independently prevents directory escape.
+### 7.2 Explicit Pydantic Tool Schemas & Recursive Traversal Protection
+1. **Explicit Tool Argument Schemas (`backend/app/policies/tool_registry.py`):**
+   - Every registered tool is mapped to an explicit Pydantic model (`SearchKnowledgeBaseArgs`, `GetWeatherArgs`, `ReadFileArgs`, `SendEmailArgs`, `DeleteFileArgs`, `ExecuteCommandArgs`).
+   - Models enforce strict string types (`StrictStr(min_length=1)`) and `model_config = ConfigDict(extra="forbid")`, rejecting parameter pollution, type confusion, and unauthorized fields before authorization.
+2. **Recursive Traversal Defense (`backend/app/policies/tool_authorizer.py`):**
+   - Recursively inspects arbitrary nested dictionaries and lists in tool arguments for path traversal (`../`, `..\`), multi-level escapes, recursive URL encoding (`%2e%2e%2f`, `%252e%252e%252f`), null-byte injection (`\0`, `%00`), and symlink escapes outside the allowed base directory.
+3. **Execution Sandbox Layer (`ToolExecutor._run_simulated_tool`):**
+   - Independently re-validates path safety in the execution simulator. If the authorization layer is mocked or bypassed, the sandbox independently prevents directory escape.
 
 ---
 
@@ -138,7 +150,7 @@ To overcome rigid regex length constraints without matching benign development t
 - **Hardware:** Dell Vostro Laptop (Intel CPU, 8GB System RAM)
 - **Operating System:** Fedora Linux x86_64
 - **Runtime Environment:** Python 3.15.2 virtual environment (`.venv`)
-- **Key Libraries:** `scikit-learn==1.9.1`, `pandas==3.1.1`, `numpy==2.5.4`, `matplotlib==3.11.2`, `pytest==9.2.0`, `fastapi==0.163.0`
+- **Key Libraries:** `scikit-learn==1.9.1`, `pandas==3.1.1`, `numpy==2.5.4`, `matplotlib==3.11.2`, `pytest==9.2.0`, `fastapi==0.163.0`, `pydantic==2.12.5`
 - **Execution Mode:** Local CPU execution; zero external network requests or paid cloud APIs utilized during benchmark execution.
 
 ---
@@ -158,6 +170,9 @@ python3 research/experiments/run_benchmark.py
 # 4. Generate all comparative visualization charts
 python3 research/experiments/visualize_results.py
 
-# 5. Run complete automated test suite (145 tests)
+# 5. Verify 100% deterministic reproducibility across runs
+python3 research/experiments/verify_reproducibility.py
+
+# 6. Run complete automated regression test suite (151 passing tests)
 pytest -v
 ```

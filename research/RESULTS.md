@@ -168,6 +168,7 @@ Evaluated across tool abuse attempts in the test splits:
 ## 6. Generated Result Artifacts
 
 All benchmark outputs are persistently tracked in the repository:
+- **Reproducibility Verification Report:** [`reproducibility_report.json`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/reproducibility_report.json)
 - **Historical Day 8 Baseline:** [`research/results/historical/day8_audit/`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/historical/day8_audit/)
 - **Hardened Day 8.5 Outputs:** [`research/results/day8_5_hardened/`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/day8_5_hardened/)
 - **Current Machine-Readable Results:** [`benchmark_results.json`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/benchmark_results.json)
@@ -179,3 +180,39 @@ All benchmark outputs are persistently tracked in the repository:
   - Confusion Matrix Grid: [`confusion_matrices.png`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/figures/confusion_matrices.png)
   - Per-Category Threat Recall: [`per_category_performance.png`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/figures/per_category_performance.png)
   - In-Distribution vs OOD Robustness: [`experiment_comparison.png`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/figures/experiment_comparison.png)
+
+---
+
+## 7. Independent Benchmark Reproducibility & Schema Hardening Verification
+
+### 7.1 Deterministic Benchmark Reproducibility
+To guarantee scientific integrity and verify that evaluation results are not artifacts of nondeterministic execution:
+1. All benchmark datasets, train/val/test partitions, and grouped OOD splits were cryptographically cataloged with SHA-256 hashes (recorded in [`reproducibility_report.json`](file:///home/sushanthns/Projects/PromptShield-AI/research/results/reproducibility_report.json)).
+2. An automated reproduction harness ([`verify_reproducibility.py`](file:///home/sushanthns/Projects/PromptShield-AI/research/experiments/verify_reproducibility.py)) was executed across consecutive complete pipeline runs using a preserved pseudo-random seed (`random_state=42`).
+3. An exact field-by-field verification compared:
+   - All classification metrics (Accuracy, Precision, Recall, F1, FPR, FNR, TP, FP, TN, FN) across Configs A, B, C, D in both Experiment 1 (Stratified) and Experiment 2 (Grouped OOD).
+   - Confusion matrices across all four configurations.
+   - PII and credential privacy metrics (29/29 detected, 0 leaks, 0.00% leakage rate).
+   - Tool authorization metrics (90% auth deny, 10% require approval, 0 sandbox bypasses).
+   - 10 adversarial scenario case study decisions.
+4. **Result:** **0 discrepancies detected** across all evaluated metrics between Run 1 and Run 2, confirming **100% deterministic reproducibility**.
+
+### 7.2 Credential Detector Generalization & Lookalike Disambiguation
+The credential detection architecture was generalized beyond benchmark-specific synthetic tokens to support real-world production secret formats while strictly filtering out benign code identifiers:
+- **Supported Formats:**
+  - GitHub Personal Access Tokens (`ghp_*`, `github_pat_*`)
+  - Slack Bot & User Tokens (`xoxb-*`, `xoxp-*`)
+  - Stripe Live & Test Secret Keys (`sk_live_*`, `sk_test_*`)
+  - Google Cloud / Maps API Keys (`AIza*`)
+  - Generic Secret Key Assignments (`api_key = "..."`, `secret_token = '...'`)
+- **Benign Lookalike Disambiguation:**
+  - Evaluated against unseen benign code tokens and library identifiers: `sk-stream`, `sk-bundle`, `sk-cluster`, `sk-network`, `sk-server`, `sk-client`, `sk-prod`, `sk-dev`, `sk-9`, `AKIA-PROD-KEY`, `AKIAMOCK`, `const sk = 42;`, `sk_lookup = {}`.
+  - **Result:** **0 false positive detections**. All benign identifiers passed unhindered, preserving 100% precision.
+
+### 7.3 Tool Schema Hardening & Recursive Traversal Protection
+- **Explicit Pydantic Schemas:**
+  - Every registered tool in [`tool_registry.py`](file:///home/sushanthns/Projects/PromptShield-AI/backend/app/policies/tool_registry.py) is now governed by an explicit Pydantic model (`SearchKnowledgeBaseArgs`, `GetWeatherArgs`, `ReadFileArgs`, `SendEmailArgs`, `DeleteFileArgs`, `ExecuteCommandArgs`).
+  - Strict type checking (`StrictStr(min_length=1)`) and `model_config = ConfigDict(extra="forbid")` eliminate parameter injection and type confusion attacks.
+- **Recursive JSON Traversal Protection:**
+  - Path traversal and null-byte detection in [`tool_authorizer.py`](file:///home/sushanthns/Projects/PromptShield-AI/backend/app/policies/tool_authorizer.py) recursively traverses arbitrary nested dictionaries and lists, stopping attackers attempting to smuggle traversal payloads (`../`, `..\`, `%2e%2e`, `\x00`) inside nested configuration objects before execution.
+

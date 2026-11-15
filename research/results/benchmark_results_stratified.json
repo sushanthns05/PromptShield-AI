@@ -41,12 +41,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 0.045,
-        "median_ms": 0.029,
-        "p95_ms": 0.06,
-        "p99_ms": 0.29,
+        "mean_ms": 0.032,
+        "median_ms": 0.027,
+        "p95_ms": 0.059,
+        "p99_ms": 0.077,
         "min_ms": 0.016,
-        "max_ms": 1.124,
+        "max_ms": 0.082,
         "sample_count": 81
       },
       "per_category_metrics": {
@@ -253,12 +253,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 1.798,
-        "median_ms": 1.713,
-        "p95_ms": 2.401,
-        "p99_ms": 2.935,
-        "min_ms": 1.299,
-        "max_ms": 3.277,
+        "mean_ms": 1.869,
+        "median_ms": 1.714,
+        "p95_ms": 2.82,
+        "p99_ms": 2.956,
+        "min_ms": 1.22,
+        "max_ms": 3.021,
         "sample_count": 81
       },
       "per_category_metrics": {
@@ -465,12 +465,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 1.32,
-        "median_ms": 1.505,
-        "p95_ms": 2.307,
-        "p99_ms": 2.752,
+        "mean_ms": 1.428,
+        "median_ms": 1.533,
+        "p95_ms": 2.842,
+        "p99_ms": 3.039,
         "min_ms": 0.02,
-        "max_ms": 2.763,
+        "max_ms": 3.229,
         "sample_count": 81
       },
       "per_category_metrics": {
@@ -677,12 +677,12 @@
         ]
       },
       "latency_metrics": {
-        "mean_ms": 1.646,
-        "median_ms": 1.783,
-        "p95_ms": 2.245,
-        "p99_ms": 2.844,
-        "min_ms": 0.026,
-        "max_ms": 3.852,
+        "mean_ms": 1.706,
+        "median_ms": 1.818,
+        "p95_ms": 2.863,
+        "p99_ms": 2.985,
+        "min_ms": 0.027,
+        "max_ms": 3.044,
         "sample_count": 81
       },
       "per_category_metrics": {

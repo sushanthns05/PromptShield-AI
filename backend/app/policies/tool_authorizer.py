@@ -203,20 +203,7 @@ class ToolAuthorizer:
                 reasons=reasons,
             )
 
-        # 5. Validate tool arguments
-        is_valid_args, arg_err = self.registry.validate_arguments(tool_name, arguments)
-        if not is_valid_args:
-            reasons.append(f"Denied: Argument validation failed: {arg_err}")
-            return AuthorizationResult(
-                decision=AuthDecision.DENY,
-                tool_name=tool_name,
-                requester_id=requester_id,
-                requester_role=role.value,
-                risk_level=tool.risk_level.value,
-                reasons=reasons,
-            )
-
-        # 5b. Validate path parameters for directory traversal, null bytes, and sandbox escapes
+        # 5a. Recursively validate path parameters and arbitrary nested JSON for directory traversal & null bytes
         path_param_names = {
             "filepath",
             "file_path",
@@ -228,21 +215,50 @@ class ToolAuthorizer:
             "directory",
             "dir",
         }
-        for arg_name, arg_val in arguments.items():
-            if arg_name in path_param_names and isinstance(arg_val, str):
-                is_safe, path_err = validate_safe_path(arg_val)
-                if not is_safe:
-                    reasons.append(
-                        f"Denied: Path traversal or invalid path in argument '{arg_name}': {path_err}"
-                    )
-                    return AuthorizationResult(
-                        decision=AuthDecision.DENY,
-                        tool_name=tool_name,
-                        requester_id=requester_id,
-                        requester_role=role.value,
-                        risk_level=tool.risk_level.value,
-                        reasons=reasons,
-                    )
+
+        def _find_path_error(obj: Any, key_name: str = "") -> Optional[str]:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    k_str = f"{key_name}.{k}" if key_name else str(k)
+                    err = _find_path_error(v, k_str)
+                    if err:
+                        return err
+            elif isinstance(obj, list):
+                for idx, item in enumerate(obj):
+                    err = _find_path_error(item, f"{key_name}[{idx}]")
+                    if err:
+                        return err
+            elif isinstance(obj, str):
+                if any(p in key_name.lower() for p in path_param_names) or ".." in obj or "\x00" in obj:
+                    is_safe, err_msg = validate_safe_path(obj)
+                    if not is_safe:
+                        return f"Path traversal or invalid path in argument '{key_name}': {err_msg}"
+            return None
+
+        traversal_err = _find_path_error(arguments)
+        if traversal_err:
+            reasons.append(f"Denied: {traversal_err}")
+            return AuthorizationResult(
+                decision=AuthDecision.DENY,
+                tool_name=tool_name,
+                requester_id=requester_id,
+                requester_role=role.value,
+                risk_level=tool.risk_level.value,
+                reasons=reasons,
+            )
+
+        # 5b. Validate tool argument types and strict Pydantic schemas
+        is_valid_args, arg_err = self.registry.validate_arguments(tool_name, arguments)
+        if not is_valid_args:
+            reasons.append(f"Denied: Argument validation failed: {arg_err}")
+            return AuthorizationResult(
+                decision=AuthDecision.DENY,
+                tool_name=tool_name,
+                requester_id=requester_id,
+                requester_role=role.value,
+                risk_level=tool.risk_level.value,
+                reasons=reasons,
+            )
 
         # 6. PromptShield Risk Score Enforcement
         if risk_score >= 70:
