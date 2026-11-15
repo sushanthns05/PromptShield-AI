@@ -21,7 +21,68 @@ import threading
 from typing import Any, Optional
 from uuid import uuid4
 
+from backend.app.privacy.pii_detector import redact_sensitive_data
+
 logger = logging.getLogger("promptshield.event_store")
+
+
+# Conservative allowlist of safe metadata keys
+SAFE_METADATA_KEYS = {
+    "analysis_id",
+    "tool_name",
+    "risk_level",
+    "rule_findings_count",
+    "triggered_rules",
+    "sensitive_findings_count",
+    "document_id",
+    "trust_level",
+    "source",
+    "requester_role",
+    "requires_approval",
+    "approval_id",
+    "execution_id",
+    "reason",
+    "error",
+    "approver_role",
+    "status",
+    "format",
+    "category",
+    "severity",
+    "decision",
+    "intent_hash",
+    "bound_tool",
+    "details",
+    "metadata",
+    "info",
+    "items",
+    "sub_array",
+    "findings",
+    "tags",
+}
+
+# Forbidden substrings matching sensitive / secret keys in any casing (camelCase, snake_case, etc.)
+FORBIDDEN_KEY_FRAGMENTS = (
+    "password",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "key",
+    "auth",
+    "credential",
+    "prompt",
+    "content",
+    "argument",
+    "arg",
+    "command",
+    "body",
+    "raw",
+    "cookie",
+    "session",
+    "jwt",
+    "bearer",
+    "private",
+)
 
 
 @dataclass
@@ -136,45 +197,68 @@ class EventStore:
         elif cat == "TOOL_EXECUTION":
             self._tool_exec_attempts += 1
 
-    @staticmethod
-    def _sanitize_metadata(meta: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _is_safe_key(cls, key: str) -> bool:
+        """Check if a metadata key is safe and not matching any sensitive key fragments."""
+        if not isinstance(key, str):
+            return False
+        k_lower = key.strip().lower()
+        for frag in FORBIDDEN_KEY_FRAGMENTS:
+            if frag in k_lower:
+                return False
+        norm = k_lower.replace("_", "")
+        safe_norms = {sk.replace("_", "") for sk in SAFE_METADATA_KEYS}
+        return norm in safe_norms
+
+    @classmethod
+    def _sanitize_value(cls, val: Any, max_depth: int = 5) -> Any:
+        """Recursively sanitize metadata values to prevent sensitive data leakage."""
+        if max_depth <= 0:
+            return None
+
+        if isinstance(val, bool):
+            return val
+
+        if isinstance(val, (int, float)):
+            return val
+
+        if isinstance(val, str):
+            # Limit string length and redact any embedded secrets/PII
+            truncated = val[:120]
+            return redact_sensitive_data(truncated)
+
+        if isinstance(val, (list, tuple)):
+            clean_list = []
+            for item in val[:20]:
+                cleaned_item = cls._sanitize_value(item, max_depth=max_depth - 1)
+                if cleaned_item is not None:
+                    clean_list.append(cleaned_item)
+            return clean_list
+
+        if isinstance(val, dict):
+            clean_dict = {}
+            for k, v in val.items():
+                if not cls._is_safe_key(str(k)):
+                    continue
+                cleaned_val = cls._sanitize_value(v, max_depth=max_depth - 1)
+                if cleaned_val is not None:
+                    clean_dict[str(k)] = cleaned_val
+            return clean_dict
+
+        # Unsupported or dangerous object types are safely discarded
+        return None
+
+    @classmethod
+    def _sanitize_metadata(cls, meta: dict[str, Any]) -> dict[str, Any]:
         """
-        Strip sensitive parameters (prompts, arguments, keys, tokens, passwords)
-        and retain only safe statistical, category, and policy metadata.
+        Deep recursive metadata sanitizer applying conservative allowlisting,
+        forbidden-fragment rejection (camelCase/snake_case), string length limits,
+        and embedded secret redaction at all depths.
         """
-        forbidden_keys = {
-            "prompt",
-            "content",
-            "arguments",
-            "args",
-            "password",
-            "secret",
-            "token",
-            "api_key",
-            "key",
-            "authorization",
-            "body",
-            "exception",
-            "raw_text",
-            "query",
-            "command",
-        }
-        clean: dict[str, Any] = {}
-        for k, v in meta.items():
-            if str(k).lower() in forbidden_keys:
-                continue
-            if isinstance(v, (int, float, bool, str)):
-                clean[k] = v
-            elif isinstance(v, (list, tuple)):
-                # Clean list elements if primitives
-                clean[k] = [x for x in v if isinstance(x, (int, float, bool, str))][:20]
-            elif isinstance(v, dict):
-                clean[k] = {
-                    dk: dv
-                    for dk, dv in v.items()
-                    if str(dk).lower() not in forbidden_keys and isinstance(dv, (int, float, bool, str))
-                }
-        return clean
+        if not isinstance(meta, dict):
+            return {}
+        cleaned = cls._sanitize_value(meta, max_depth=5)
+        return cleaned if isinstance(cleaned, dict) else {}
 
     def get_events(
         self,

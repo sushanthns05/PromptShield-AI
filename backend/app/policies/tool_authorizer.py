@@ -153,8 +153,31 @@ class ToolAuthorizer:
         approval_id: Optional[str] = None,
         client_supplied_admin: bool = False,
         client_supplied_approved: bool = False,
+        analysis_decision: Optional[str] = None,
     ) -> AuthorizationResult:
         reasons: list[str] = []
+
+        # 0. Enforce Authoritative Analysis Decision if supplied
+        if analysis_decision is not None:
+            norm_dec = str(analysis_decision).strip().upper()
+            if norm_dec != "ALLOW":
+                if norm_dec == "BLOCK":
+                    reasons.append("Denied: Upstream prompt analysis resulted in BLOCK decision")
+                elif norm_dec == "SANITIZE":
+                    reasons.append(
+                        "Denied: Upstream prompt analysis resulted in SANITIZE decision. "
+                        "Resubmit sanitized prompt for analysis before tool invocation."
+                    )
+                else:
+                    reasons.append(f"Denied: Invalid or unverified analysis decision '{analysis_decision}'")
+                return AuthorizationResult(
+                    decision=AuthDecision.DENY,
+                    tool_name=tool_name,
+                    requester_id=requester_id,
+                    requester_role=str(requester_role),
+                    risk_level="HIGH",
+                    reasons=reasons,
+                )
 
         # 1. Security Invariant: Neutralize untrusted client-supplied privilege flags
         if client_supplied_admin:
@@ -285,11 +308,17 @@ class ToolAuthorizer:
             )
 
         # 8. Trust-Boundary Enforcement: Untrusted context cannot trigger critical operations
-        normalized_trust = (
+        # Unknown or invalid trust values must fail closed to UNTRUSTED
+        raw_trust = (
             context_trust_level.value
             if isinstance(context_trust_level, TrustLevel)
             else str(context_trust_level).strip().upper()
         )
+        if raw_trust not in (TrustLevel.TRUSTED.value, "TRUSTED", "SYSTEM_TRUSTED"):
+            normalized_trust = TrustLevel.UNTRUSTED.value
+        else:
+            normalized_trust = raw_trust
+
         if normalized_trust != TrustLevel.TRUSTED.value and tool.risk_level == ToolRiskLevel.CRITICAL:
             reasons.append("Denied: Critical tool invocation rejected from untrusted context")
             return AuthorizationResult(

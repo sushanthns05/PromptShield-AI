@@ -70,6 +70,7 @@ class ToolExecutor:
         risk_score: int = 0,
         context_trust_level: Union[TrustLevel, str] = TrustLevel.UNTRUSTED,
         approval_id: Optional[str] = None,
+        analysis_decision: Optional[str] = None,
     ) -> ExecutionResult:
         # 1. Independent backend authorization check
         auth_result = self.authorizer.authorize(
@@ -80,6 +81,7 @@ class ToolExecutor:
             risk_score=risk_score,
             context_trust_level=context_trust_level,
             approval_id=approval_id,
+            analysis_decision=analysis_decision,
         )
 
         if auth_result.decision != AuthDecision.ALLOW:

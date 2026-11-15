@@ -33,25 +33,46 @@ PromptShield AI provides an adaptive runtime security gateway for LLM applicatio
 
 ## 2. Core Security Invariants
 
-### 2.1 Server-Controlled Analysis Context (`AnalysisContextStore`)
-- **No Client Risk Manipulation**: Tool authorization and execution endpoints (`/api/v1/tools/authorize` and `/api/v1/tools/execute`) strictly require a valid, server-issued `analysis_id` obtained from `/api/v1/analyze`.
-- **Authoritative Risk Scoring**: The gateway retrieves the risk score and policy decision directly from the server-side `AnalysisContextStore`. Any client-supplied `risk_score` in requests is strictly ignored and logged as a warning.
+### 2.1 Server-Controlled Analysis Context & Decision Policy (`AnalysisContextStore`)
+- **ALLOW-Only Policy**: Only analysis contexts with an authoritative `ALLOW` decision may authorize or execute tool operations.
+  - `SANITIZE` contexts are strictly rejected: prompts containing sensitive data or credentials must be resubmitted as sanitized prompts for a fresh analysis.
+  - `BLOCK` contexts are strictly rejected: prompt injection, high severity threats, and policy violations permanently block tool invocation.
+  - Unknown or invalid decisions fail closed.
+  - Checks are applied independently in both `/api/v1/tools/authorize` and `/api/v1/tools/execute`.
+- **Server-Authoritative Context Trust**: Client-supplied `context_trust_level` in request bodies is untrusted and ignored. The gateway strictly retrieves context trust from `ctx.context_trust_level` (`UNTRUSTED` by default). Unknown or malformed trust values fail closed to `UNTRUSTED`.
+- **Authoritative Risk Scoring**: The gateway retrieves the risk score directly from the server-side `AnalysisContextStore`. Client-supplied `risk_score` values are ignored.
 - **No Zero-Risk Fallbacks**: If `analysis_id` is omitted, invalid, or expired, requests are rejected with HTTP 422 or HTTP 400. The gateway never falls back to `risk_score = 0`.
-- **Identity Binding**: Each `analysis_id` is bound to the `requester_id` that initiated the analysis. If an unauthorized client attempts to present another requester's `analysis_id`, the request is rejected with HTTP 403 Forbidden.
-- **Context Trust Boundary**: External clients cannot unilaterally declare `context_trust_level="TRUSTED"` or `"SYSTEM_TRUSTED"`. The gateway automatically coerces all client-supplied trust assertions to `"UNTRUSTED"`.
+- **Identity Binding**: Each `analysis_id` is bound to the `requester_id` that initiated the analysis. Presenting another requester's `analysis_id` yields HTTP 403 Forbidden.
 - **Configurable TTL**: Analysis contexts expire after a configurable TTL (default: 300 seconds).
 
-### 2.2 Strict Privacy Guarantees
+### 2.2 Analysis-to-Tool Intent Binding
+- **Intent Protection**: An `analysis_id` cannot be reused to authorize or execute unrelated tool operations.
+- **Atomic Intent Binding**: Upon the first valid authorization attempt, the context is atomically bound to:
+  - Normalized tool name (lowercased, trimmed).
+  - Canonical JSON representation of validated arguments (`sort_keys=True`, no extra whitespace).
+  - Cryptographic SHA-256 hash of the canonical intent (`sha256(tool:args)`).
+- **Enforcement Rules**:
+  - Subsequent authorizations and executions must match the exact same tool and arguments.
+  - Rejection of changed tool names, modified arguments, nested argument tampering, and type-confusion attempts (e.g. `1` vs `"1"`).
+  - Approval-required operations remain strictly bound while awaiting human review.
+  - Concurrent authorization attempts are serialized using thread-safe locking (`RLock`) so that only one unique intent is bound.
+- **Research Prototype Notice**: Intent binding is a context-consistency mechanism, not a replacement for authentication.
+
+### 2.3 Strict Privacy Guarantees & Recursive Event Sanitization
+- **Deep Recursive Metadata Sanitization**: The `EventStore` enforces a conservative allowlist of approved metadata fields (`SAFE_METADATA_KEYS`) and rejects sensitive/credential keys at every depth (`FORBIDDEN_KEY_FRAGMENTS`, matching camelCase and snake_case fragments such as `apiKey`, `userPassword`, `secretToken`).
+- **Embedded Credential Redaction**: All string metadata values are capped to 120 characters and scanned with `redact_sensitive_data()`, stripping API keys, tokens, and PII embedded in text fields.
 - **Zero Raw Data Exposure**: Raw prompt text, user passwords, API keys, tokens, and PII are never logged or persisted in audit event metadata.
 - **Argument Redaction in Dashboards**: When listing approval requests via `GET /api/v1/dashboard/approvals`, tool argument payloads are strictly omitted from the API response to prevent sensitive argument leakage to monitoring viewers.
-- **Sanitized Audit Events**: The `EventStore` runs all event metadata through a defensive sanitizer (`_sanitize_metadata`) that strips forbidden keys (`prompt`, `arguments`, `password`, `secret`, `token`, `key`, `content`, `command`, etc.) before in-memory storage.
 
-### 2.3 Limitations & Development Notices
+### 2.4 Strict Schema Validation (`ConfigDict(extra="forbid")`)
+- All security-sensitive request models (`ScanDocumentRequest`, `ToolAuthorizeRequest`, `ToolExecuteRequest`, `ApprovalDecisionRequest`) forbid extra parameters. Malformed or unrecognized fields trigger HTTP 422 Unprocessable Entity.
+
+### 2.5 Limitations & Development Notices
 > [!WARNING]
 > **In-Memory Storage Limitation**: The `AnalysisContextStore`, `EventStore`, and `ApprovalManager` are session-scoped and in-memory. All event history, active contexts, and pending approvals are cleared upon server restart. Production environments must back these stores with durable, encrypted persistence (e.g., PostgreSQL / Redis) and distributed locking.
 
-> [!NOTE]
-> **Development Identity Notice**: Client-supplied `requester_id` and `requester_role` fields represent development-only assertions and do not constitute authenticated identities. Production deployments must enforce cryptographically verified tokens (OAuth2/OIDC, mTLS, JWT).
+> [!WARNING]
+> **Development Identity & Approval Limitations**: Client-supplied `requester_id`, `requester_role`, `approver_id`, and `approver_role` fields represent development-only assertions and do not constitute authenticated identities. Request-body `ADMIN` claims are spoofable by any caller in this prototype. Separation-of-duties checks are enforced against these development claims, but production deployments must enforce cryptographically verified tokens (OAuth2/OIDC, mTLS, JWT) with server-resolved RBAC roles.
 
 ---
 

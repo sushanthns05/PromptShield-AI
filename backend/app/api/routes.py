@@ -93,6 +93,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class ScanDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     document_id: str = Field(..., min_length=1, description="Unique identifier for the document")
     content: str = Field(..., description="Document content text")
     source: str = Field(default="retrieved_document", description="Source classification of document")
@@ -119,6 +120,7 @@ class ScanDocumentResponse(BaseModel):
 
 
 class ToolAuthorizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     tool_name: str = Field(..., min_length=1, description="Name of tool to authorize")
     arguments: dict[str, Any] = Field(default_factory=dict, description="Arguments for tool invocation")
     requester_id: str = Field(..., min_length=1, description="Identifier of the requester")
@@ -132,7 +134,10 @@ class ToolAuthorizeRequest(BaseModel):
         default=None,
         description="Client-supplied risk score (untrusted/ignored; server context is authoritative)",
     )
-    context_trust_level: str = Field(default="UNTRUSTED", description="Context trust boundary level")
+    context_trust_level: Optional[str] = Field(
+        default="UNTRUSTED",
+        description="Client-supplied context trust claim (untrusted/ignored; server context is authoritative)",
+    )
     approval_id: Optional[str] = Field(default=None, description="Existing human approval token if acquired")
     is_admin: Optional[bool] = Field(default=None, description="Client-supplied admin flag (untrusted/ignored)")
     approved: Optional[bool] = Field(default=None, description="Client-supplied approval flag (untrusted/ignored)")
@@ -150,6 +155,7 @@ class ToolAuthorizeResponse(BaseModel):
 
 
 class ToolExecuteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     tool_name: str = Field(..., min_length=1, description="Name of tool to execute")
     arguments: dict[str, Any] = Field(default_factory=dict, description="Arguments for tool invocation")
     requester_id: str = Field(..., min_length=1, description="Identifier of the requester")
@@ -163,7 +169,10 @@ class ToolExecuteRequest(BaseModel):
         default=None,
         description="Client-supplied risk score (untrusted/ignored; server context is authoritative)",
     )
-    context_trust_level: str = Field(default="UNTRUSTED", description="Context trust boundary level")
+    context_trust_level: Optional[str] = Field(
+        default="UNTRUSTED",
+        description="Client-supplied context trust claim (untrusted/ignored; server context is authoritative)",
+    )
     approval_id: Optional[str] = Field(default=None, description="Approved human approval token")
 
 
@@ -178,9 +187,17 @@ class ToolExecuteResponse(BaseModel):
 
 
 class ApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     decision: str = Field(..., description="'APPROVE' or 'REJECT'")
-    approver_id: str = Field(..., min_length=1, description="Identifier of the reviewer/approver")
-    approver_role: str = Field(..., description="Role of the approver (e.g. 'ADMIN')")
+    approver_id: str = Field(
+        ...,
+        min_length=1,
+        description="Development-only claimed identifier of the reviewer/approver (unauthenticated)",
+    )
+    approver_role: str = Field(
+        ...,
+        description="Development-only claimed role of the approver (e.g. 'ADMIN') (unauthenticated)",
+    )
     reason: Optional[str] = Field(default=None, description="Optional decision notes")
 
     @field_validator("decision")
@@ -394,7 +411,8 @@ async def scan_document_endpoint(payload: ScanDocumentRequest, request: Request)
 async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Request):
     """
     Independently authorize proposed tool actions against RBAC, server-controlled risk score,
-    and human approval constraints. Requires a valid server-generated analysis_id.
+    authoritative analysis decision, and human approval constraints.
+    Requires a valid server-generated analysis_id.
     """
     authorizer: Optional[ToolAuthorizer] = getattr(request.app.state, "tool_authorizer", None)
     if authorizer is None:
@@ -418,7 +436,94 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
     if not ctx:
         raise HTTPException(status_code=status_code, detail=err_msg)
 
-    # 2. Server-controlled risk score is authoritative
+    # 2. Enforce Authoritative Analysis Decision: Only ALLOW contexts may authorize tools
+    is_allowed_dec, dec_err, _ = analysis_store.validate_analysis_decision(ctx)
+    if not is_allowed_dec:
+        logger.warning(
+            "Tool authorization rejected: context '%s' has non-ALLOW decision '%s' for requester '%s'",
+            ctx.analysis_id,
+            ctx.decision,
+            payload.requester_id,
+        )
+        event_store.record_event(
+            category="TOOL_AUTHORIZATION",
+            event_type="TOOL_DENIED",
+            decision="DENY",
+            risk_score=ctx.risk_score,
+            requester_id=payload.requester_id,
+            metadata={
+                "tool_name": payload.tool_name,
+                "requester_role": payload.requester_role,
+                "analysis_id": ctx.analysis_id,
+                "reason": dec_err,
+            },
+        )
+        return {
+            "decision": "DENY",
+            "tool_name": payload.tool_name,
+            "requester_id": payload.requester_id,
+            "requester_role": payload.requester_role,
+            "risk_level": "HIGH",
+            "reasons": [dec_err],
+            "approval_id": None,
+            "requires_approval": False,
+        }
+
+    # 3. Server-Controlled Context Trust: Never trust client-supplied trust assertions
+    server_trust = ctx.context_trust_level
+    if payload.context_trust_level is not None and payload.context_trust_level != server_trust:
+        logger.warning(
+            "Client attempted to supply context_trust_level '%s' for requester '%s'. Server trust '%s' is authoritative.",
+            payload.context_trust_level,
+            payload.requester_id,
+            server_trust,
+        )
+
+    # Unknown or malformed trust values fail closed to UNTRUSTED
+    valid_trust_levels = {"UNTRUSTED", "TRUSTED", "SYSTEM_TRUSTED"}
+    norm_trust = str(server_trust).strip().upper() if server_trust else ""
+    if norm_trust not in valid_trust_levels:
+        logger.warning("Unrecognized context trust level '%s'. Failing closed to UNTRUSTED.", server_trust)
+        norm_trust = "UNTRUSTED"
+
+    # 4. Atomic Intent Binding: Bind or validate tool intent against analysis context
+    is_valid_intent, intent_err, _ = analysis_store.bind_or_validate_intent(
+        analysis_id=payload.analysis_id,
+        tool_name=payload.tool_name,
+        arguments=payload.arguments,
+    )
+    if not is_valid_intent:
+        logger.warning(
+            "Tool authorization rejected: intent mismatch for context '%s' (requester: '%s'): %s",
+            ctx.analysis_id,
+            payload.requester_id,
+            intent_err,
+        )
+        event_store.record_event(
+            category="TOOL_AUTHORIZATION",
+            event_type="TOOL_DENIED",
+            decision="DENY",
+            risk_score=ctx.risk_score,
+            requester_id=payload.requester_id,
+            metadata={
+                "tool_name": payload.tool_name,
+                "requester_role": payload.requester_role,
+                "analysis_id": ctx.analysis_id,
+                "reason": intent_err,
+            },
+        )
+        return {
+            "decision": "DENY",
+            "tool_name": payload.tool_name,
+            "requester_id": payload.requester_id,
+            "requester_role": payload.requester_role,
+            "risk_level": "HIGH",
+            "reasons": [intent_err],
+            "approval_id": None,
+            "requires_approval": False,
+        }
+
+    # 5. Authoritative Risk Score from Server Context
     server_risk_score = ctx.risk_score
     if payload.risk_score is not None and payload.risk_score != server_risk_score:
         logger.warning(
@@ -428,16 +533,7 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
             payload.requester_id,
         )
 
-    # 3. Security Invariant: External clients cannot unilaterally declare TRUSTED context
-    context_trust = payload.context_trust_level
-    if context_trust.strip().upper() in ("TRUSTED", "SYSTEM_TRUSTED"):
-        logger.warning(
-            "Client attempted to assert TRUSTED context on external API for requester '%s'. Overriding to UNTRUSTED.",
-            payload.requester_id,
-        )
-        context_trust = "UNTRUSTED"
-
-    # Detect client spoofing attempts
+    # Detect client privilege spoofing attempts
     client_admin = payload.is_admin is True
     client_approved = payload.approved is True
 
@@ -447,10 +543,11 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
         requester_id=payload.requester_id,
         requester_role=payload.requester_role,
         risk_score=server_risk_score,
-        context_trust_level=context_trust,
+        context_trust_level=norm_trust,
         approval_id=payload.approval_id,
         client_supplied_admin=client_admin,
         client_supplied_approved=client_approved,
+        analysis_decision=ctx.decision,
     )
 
     # Record sanitized event
@@ -516,17 +613,66 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
     if not ctx:
         raise HTTPException(status_code=status_code, detail=err_msg)
 
-    # 2. Server-controlled risk score is authoritative
-    server_risk_score = ctx.risk_score
-
-    # 3. Security Invariant: External clients cannot unilaterally declare TRUSTED context
-    context_trust = payload.context_trust_level
-    if context_trust.strip().upper() in ("TRUSTED", "SYSTEM_TRUSTED"):
+    # 2. Enforce Authoritative Analysis Decision: Only ALLOW contexts may execute tools
+    is_allowed_dec, dec_err, _ = analysis_store.validate_analysis_decision(ctx)
+    if not is_allowed_dec:
         logger.warning(
-            "Client attempted to assert TRUSTED context on external API for requester '%s'. Overriding to UNTRUSTED.",
+            "Tool execution rejected: context '%s' has non-ALLOW decision '%s' for requester '%s'",
+            ctx.analysis_id,
+            ctx.decision,
             payload.requester_id,
         )
-        context_trust = "UNTRUSTED"
+        event_store.record_event(
+            category="TOOL_EXECUTION",
+            event_type="TOOL_EXECUTION_DENIED",
+            decision="FORBIDDEN",
+            risk_score=ctx.risk_score,
+            requester_id=payload.requester_id,
+            metadata={"tool_name": payload.tool_name, "analysis_id": ctx.analysis_id, "error": dec_err},
+        )
+        raise HTTPException(status_code=403, detail=dec_err)
+
+    # 3. Server-Controlled Context Trust: Never trust client-supplied trust assertions
+    server_trust = ctx.context_trust_level
+    if payload.context_trust_level is not None and payload.context_trust_level != server_trust:
+        logger.warning(
+            "Client attempted to supply context_trust_level '%s' for requester '%s'. Server trust '%s' is authoritative.",
+            payload.context_trust_level,
+            payload.requester_id,
+            server_trust,
+        )
+
+    valid_trust_levels = {"UNTRUSTED", "TRUSTED", "SYSTEM_TRUSTED"}
+    norm_trust = str(server_trust).strip().upper() if server_trust else ""
+    if norm_trust not in valid_trust_levels:
+        logger.warning("Unrecognized context trust level '%s'. Failing closed to UNTRUSTED.", server_trust)
+        norm_trust = "UNTRUSTED"
+
+    # 4. Atomic Intent Binding: Verify tool execution matches previously bound intent
+    is_valid_intent, intent_err, _ = analysis_store.bind_or_validate_intent(
+        analysis_id=payload.analysis_id,
+        tool_name=payload.tool_name,
+        arguments=payload.arguments,
+    )
+    if not is_valid_intent:
+        logger.warning(
+            "Tool execution rejected: intent mismatch for context '%s' (requester: '%s'): %s",
+            ctx.analysis_id,
+            payload.requester_id,
+            intent_err,
+        )
+        event_store.record_event(
+            category="TOOL_EXECUTION",
+            event_type="TOOL_EXECUTION_DENIED",
+            decision="FORBIDDEN",
+            risk_score=ctx.risk_score,
+            requester_id=payload.requester_id,
+            metadata={"tool_name": payload.tool_name, "analysis_id": ctx.analysis_id, "error": intent_err},
+        )
+        raise HTTPException(status_code=403, detail=intent_err)
+
+    # 5. Server-controlled risk score is authoritative
+    server_risk_score = ctx.risk_score
 
     try:
         exec_result = executor.execute(
@@ -535,8 +681,9 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
             requester_id=payload.requester_id,
             requester_role=payload.requester_role,
             risk_score=server_risk_score,
-            context_trust_level=context_trust,
+            context_trust_level=norm_trust,
             approval_id=payload.approval_id,
+            analysis_decision=ctx.decision,
         )
 
         event_store.record_event(
@@ -587,7 +734,16 @@ async def decide_approval_endpoint(
 ):
     """
     Process human approval or rejection of a pending tool execution request.
-    Requires authenticated administrator credentials in production.
+
+    SECURITY & IDENTITY LIMITATION NOTICE (DEVELOPMENT PROTOTYPE):
+    The 'approver_id' and 'approver_role' fields accepted from the request body
+    are development-only claims and ARE SPOOFABLE by any client.
+    This research prototype does NOT perform real cryptographic authentication.
+    Production deployments MUST enforce server-validated JWT/OIDC or session
+    authentication, where approver identity and roles are resolved securely
+    server-side rather than accepted from untrusted request bodies.
+    Separation-of-duties checks implemented in ApprovalManager are enforced
+    against these development identity claims.
     """
     manager: Optional[ApprovalManager] = getattr(request.app.state, "approval_manager", None)
     if manager is None:
@@ -597,6 +753,13 @@ async def decide_approval_endpoint(
     if event_store is None:
         event_store = EventStore()
         request.app.state.event_store = event_store
+
+    logger.warning(
+        "DEVELOPMENT PROTOTYPE NOTICE: Processing approval '%s' with unauthenticated client-supplied role '%s' for approver '%s'.",
+        approval_id,
+        payload.approver_role,
+        payload.approver_id,
+    )
 
     approver_role_norm = ToolAuthorizer._normalize_role(payload.approver_role)
     if not approver_role_norm:

@@ -11,12 +11,27 @@ provider (e.g. OAuth2/OIDC, JWT validation).
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 import logging
 import threading
 from typing import Any, Optional
 from uuid import uuid4
 
 logger = logging.getLogger("promptshield.analysis_context")
+
+
+@dataclass
+class ToolIntentBinding:
+    """
+    Atomic server-side binding between an analysis context and a proposed tool action.
+    Prevents analysis context reuse for unrelated tool invocations or tampered arguments.
+    """
+
+    tool_name: str
+    canonical_arguments_json: str
+    intent_hash: str
+    bound_at: datetime
 
 
 @dataclass
@@ -33,6 +48,7 @@ class AnalysisContext:
     context_trust_level: str
     created_at: datetime
     expires_at: datetime
+    bound_intent: Optional[ToolIntentBinding] = None
 
     @property
     def is_expired(self) -> bool:
@@ -48,6 +64,8 @@ class AnalysisContext:
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
             "is_expired": self.is_expired,
+            "bound_tool": self.bound_intent.tool_name if self.bound_intent else None,
+            "intent_hash": self.bound_intent.intent_hash if self.bound_intent else None,
         }
 
 
@@ -165,6 +183,131 @@ class AnalysisContextStore:
                 )
 
             return ctx, None, 200
+
+    @staticmethod
+    def validate_analysis_decision(ctx: AnalysisContext) -> tuple[bool, Optional[str], int]:
+        """
+        Enforce authoritative analysis decision policy:
+        - Only ALLOW analysis contexts may authorize tool operations.
+        - SANITIZE contexts must be rejected until the sanitized prompt is submitted for a fresh analysis.
+        - BLOCK contexts must always be rejected.
+        - Unknown or invalid decisions must be rejected.
+
+        Returns (is_permitted, denial_reason, http_status_code).
+        """
+        decision = str(ctx.decision).strip().upper() if ctx.decision else ""
+        if decision == "ALLOW":
+            return True, None, 200
+
+        if decision == "SANITIZE":
+            return (
+                False,
+                "Denied: Upstream prompt analysis resulted in SANITIZE decision. "
+                "The prompt contained sensitive data or secrets and must be resubmitted "
+                "as a sanitized prompt for fresh analysis before tool invocation.",
+                403,
+            )
+
+        if decision == "BLOCK":
+            return (
+                False,
+                "Denied: Upstream prompt analysis resulted in BLOCK decision due to security policy violations.",
+                403,
+            )
+
+        return (
+            False,
+            f"Denied: Invalid or unverified analysis decision '{ctx.decision}'. Only verified ALLOW decisions may authorize tools.",
+            403,
+        )
+
+    def bind_or_validate_intent(
+        self,
+        analysis_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        require_previously_bound: bool = False,
+    ) -> tuple[bool, Optional[str], int]:
+        """
+        Atomic server-side binding between an analysis context and its first proposed tool intent.
+        Subsequent authorizations and executions must match the exact same tool and arguments.
+
+        Returns (is_valid, error_message, http_status_code).
+        """
+        norm_tool = str(tool_name).strip().lower()
+        try:
+            canonical_args = json.dumps(
+                arguments or {},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+        except (TypeError, ValueError) as exc:
+            return False, f"Malformed tool arguments: {exc}", 400
+
+        intent_payload = f"{norm_tool}:{canonical_args}"
+        intent_hash = hashlib.sha256(intent_payload.encode("utf-8")).hexdigest()
+
+        with self._lock:
+            ctx = self._contexts.get(analysis_id.strip())
+            if not ctx:
+                return False, f"Invalid analysis_id: analysis context '{analysis_id}' not found", 400
+
+            if ctx.is_expired:
+                self._contexts.pop(analysis_id.strip(), None)
+                return False, f"Expired analysis context: context '{analysis_id}' has expired", 400
+
+            if ctx.bound_intent is None:
+                if require_previously_bound:
+                    return (
+                        False,
+                        f"Execution rejected: analysis context '{analysis_id}' has not been bound to a prior authorized tool intent",
+                        403,
+                    )
+
+                # Bind tool intent atomically on first valid authorization/invocation
+                ctx.bound_intent = ToolIntentBinding(
+                    tool_name=norm_tool,
+                    canonical_arguments_json=canonical_args,
+                    intent_hash=intent_hash,
+                    bound_at=datetime.now(timezone.utc),
+                )
+                logger.info(
+                    "Bound analysis context '%s' to tool intent: tool='%s', hash='%s'",
+                    analysis_id,
+                    norm_tool,
+                    intent_hash[:12],
+                )
+                return True, None, 200
+
+            # Context is already bound: verify that tool and canonical arguments match exactly
+            if ctx.bound_intent.intent_hash == intent_hash:
+                return True, None, 200
+
+            # Intent mismatch detected: identify specific deviation
+            if ctx.bound_intent.tool_name != norm_tool:
+                logger.warning(
+                    "Tool intent mismatch for context '%s': bound to '%s', attempted '%s'",
+                    analysis_id,
+                    ctx.bound_intent.tool_name,
+                    norm_tool,
+                )
+                return (
+                    False,
+                    f"Analysis context intent mismatch: context '{analysis_id}' is bound to tool '{ctx.bound_intent.tool_name}', cannot execute tool '{norm_tool}'",
+                    403,
+                )
+            else:
+                logger.warning(
+                    "Argument tampering detected for context '%s' on tool '%s'",
+                    analysis_id,
+                    norm_tool,
+                )
+                return (
+                    False,
+                    f"Analysis context argument tampering: context '{analysis_id}' is bound to original arguments, modified arguments rejected",
+                    403,
+                )
 
     def purge_expired(self) -> int:
         """Purge all expired analysis contexts."""
