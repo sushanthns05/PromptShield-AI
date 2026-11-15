@@ -10,6 +10,9 @@ import uvicorn
 from backend.app.api.routes import router
 from backend.app.ml.classifier import PromptClassifier
 from backend.app.policies.risk_engine import RiskEngine
+from backend.app.rag.context_analyzer import ContextAnalyzer
+from backend.app.rag.context_policy import ContextPolicy
+from backend.app.rag.document_scanner import DocumentScanner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,9 +66,12 @@ async def lifespan(app: FastAPI):
         )
         classifier = None
 
-    # Attach shared singletons to app state
+    # Attach shared security singletons to app state
     app.state.classifier = classifier
     app.state.risk_engine = RiskEngine(classifier=classifier)
+    app.state.document_scanner = DocumentScanner(classifier=classifier)
+    app.state.context_policy = ContextPolicy()
+    app.state.context_analyzer = ContextAnalyzer()
 
     yield
 
