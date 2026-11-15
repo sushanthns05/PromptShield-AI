@@ -65,10 +65,19 @@ def test_pipeline_run_benchmark_outputs_exist():
     assert "adversarial_scenarios_evaluation" in res
 
     df_summary = pd.read_csv(summary_csv)
-    assert len(df_summary) == 4
-    assert set(df_summary["Configuration"]) == {
+    assert len(df_summary) >= 4
+    assert set(df_summary["Configuration"]).issuperset({
         "Config_A_Rules", "Config_B_ML", "Config_C_Ensemble", "Config_D_Gateway"
-    }
+    })
+
+
+def test_pipeline_load_grouped_data(pipeline):
+    train_g, val_g, test_g = pipeline.load_grouped_data()
+    assert len(train_g) > 0
+    assert len(val_g) > 0
+    assert len(test_g) > 0
+    # Grouped test set has out-of-distribution samples
+    assert len(test_g) == 215
 
 
 def test_no_test_data_used_in_training(pipeline):

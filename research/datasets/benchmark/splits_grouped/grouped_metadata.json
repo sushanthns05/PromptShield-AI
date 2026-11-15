@@ -1,0 +1,54 @@
+{
+  "experiment_name": "Experiment_2_Grouped_Template_Split",
+  "description": "Out-of-Distribution Adversarial Evaluation with clustered template groups",
+  "generated_at": "2026-11-15T13:33:21.943688+00:00",
+  "total_samples": 535,
+  "split_counts": {
+    "train": 205,
+    "val": 115,
+    "test": 215
+  },
+  "group_distribution": {
+    "train_groups": [
+      "benign_general_knowledge",
+      "benign_technical_software",
+      "direct_standard_bypass",
+      "direct_standard_extraction",
+      "direct_standard_override",
+      "indirect_standard_ai_directives",
+      "mixed_standard_injection_pii",
+      "pii_standard_emails_phones",
+      "secret_standard_apikeys_aws",
+      "tool_approval_bypass_attempts",
+      "tool_standard_role_violations"
+    ],
+    "val_groups": [
+      "benign_science_physics",
+      "direct_standard_roleplay",
+      "indirect_standard_system_tags",
+      "mixed_standard_injection_secrets",
+      "pii_contextual_employee_profiles",
+      "secret_standard_database_passwords",
+      "tool_untrusted_context_violations"
+    ],
+    "test_groups": [
+      "benign_security_probes",
+      "direct_novel_bypass",
+      "direct_novel_extraction",
+      "direct_novel_override",
+      "direct_novel_roleplay",
+      "indirect_novel_conditional_overrides",
+      "indirect_novel_delimiters",
+      "mixed_complex_multivector_stealth",
+      "pii_mixed_corporate_addresses",
+      "secret_atypical_keylengths_vault",
+      "tool_path_traversal_and_malformed"
+    ]
+  },
+  "checksums": {
+    "train_sha256": "22208a47ea9d1c49fd1908d43d847e85e7c67e838306b219a9a715fb960189e3",
+    "val_sha256": "7899224367b5a74b3fc8174dddbb09a30eade9ad3fbf245b3a1eaed49e6a643a",
+    "test_sha256": "9fb20a561f250a3e471e8204b1c0a58597eb54b2d6bdcd782be38de160b5a655"
+  },
+  "leakage_verification": "VERIFIED_ZERO_GROUP_LEAKAGE"
+}

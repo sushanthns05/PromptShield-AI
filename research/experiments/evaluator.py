@@ -58,11 +58,14 @@ class LatencyMetrics:
 class PIISecurityMetrics:
     """Specialized evaluation metrics for PII and credential privacy."""
 
-    total_samples: int
-    samples_with_sensitive_data: int
-    detection_rate: float  # Detected / Total sensitive samples
-    redaction_success_rate: float  # Properly redacted / Detected
-    leakage_rate: float  # Unredacted secrets leaked in output / Total sensitive samples
+    total_sensitive_samples: int
+    detected_samples: int
+    missed_samples: int
+    detector_recall: float                    # Detected / Total sensitive samples
+    redaction_success_on_detected: float      # Redacted / Detected
+    unredacted_leakage_count: int             # Samples where raw sensitive data reached output
+    overall_leakage_rate: float               # Leaked / Total sensitive samples (True leakage)
+    overall_privacy_preservation_rate: float  # (Total - Leaked) / Total sensitive samples
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -74,10 +77,14 @@ class ToolPolicyMetrics:
 
     total_tool_requests: int
     unauthorized_requests: int
-    unauthorized_blocking_rate: float  # Unauthorized requests correctly blocked
-    authorized_requests: int
-    authorized_acceptance_rate: float  # Legitimate requests correctly allowed
-    approval_bypass_rate: float        # Unauthorized bypass rate (target: 0.0%)
+    auth_layer_deny_count: int
+    auth_layer_require_approval_count: int
+    auth_layer_blocking_rate: float              # (DENY + REQUIRE_APPROVAL) / unauthorized_requests
+    auth_layer_strict_deny_rate: float           # DENY / unauthorized_requests
+    auth_layer_allowed_unauthorized: int         # Allowed at authorizer (e.g. traversal probes)
+    sandbox_executor_interception_count: int     # Intercepted by ToolExecutor sandbox checks
+    end_to_end_system_blocking_rate: float       # (Authorizer Blocked + Sandbox Intercepted) / unauthorized
+    approval_bypass_rate: float                  # Bypassed without valid approval (target: 0.0%)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -177,60 +184,65 @@ class SecurityEvaluator:
 
     @staticmethod
     def compute_pii_metrics(
-        total_samples: int,
+        total_sensitive_samples: int,
         detected_count: int,
         properly_redacted_count: int,
-        leaked_count: int,
+        unredacted_leaked_count: int,
     ) -> PIISecurityMetrics:
         """
-        Calculate PII & secret detection, redaction, and leakage rates.
+        Calculate PII & secret detection, redaction, and true leakage rates across all sensitive samples.
         """
-        det_rate = detected_count / total_samples if total_samples > 0 else 0.0
+        missed = total_sensitive_samples - detected_count
+        det_rate = detected_count / total_sensitive_samples if total_sensitive_samples > 0 else 0.0
         redact_rate = properly_redacted_count / detected_count if detected_count > 0 else 0.0
-        leak_rate = leaked_count / total_samples if total_samples > 0 else 0.0
+        leak_rate = unredacted_leaked_count / total_sensitive_samples if total_sensitive_samples > 0 else 0.0
+        privacy_rate = (
+            (total_sensitive_samples - unredacted_leaked_count) / total_sensitive_samples
+            if total_sensitive_samples > 0
+            else 1.0
+        )
 
         return PIISecurityMetrics(
-            total_samples=total_samples,
-            samples_with_sensitive_data=detected_count,
-            detection_rate=round(det_rate, 4),
-            redaction_success_rate=round(redact_rate, 4),
-            leakage_rate=round(leak_rate, 4),
+            total_sensitive_samples=total_sensitive_samples,
+            detected_samples=detected_count,
+            missed_samples=missed,
+            detector_recall=round(det_rate, 4),
+            redaction_success_on_detected=round(redact_rate, 4),
+            unredacted_leakage_count=unredacted_leaked_count,
+            overall_leakage_rate=round(leak_rate, 4),
+            overall_privacy_preservation_rate=round(privacy_rate, 4),
         )
 
     @staticmethod
     def compute_tool_metrics(
         total_requests: int,
         unauthorized_count: int,
-        unauthorized_blocked_count: int,
-        authorized_count: int,
-        authorized_allowed_count: int,
+        auth_layer_deny: int,
+        auth_layer_require_approval: int,
+        auth_layer_allowed_unauthorized: int,
+        sandbox_interceptions: int,
         approval_bypass_count: int,
     ) -> ToolPolicyMetrics:
         """
-        Calculate secure tool authorization governance metrics.
+        Calculate secure tool authorization governance metrics with explicit layer separation.
         """
-        block_rate = (
-            unauthorized_blocked_count / unauthorized_count
-            if unauthorized_count > 0
-            else 1.0
-        )
-        accept_rate = (
-            authorized_allowed_count / authorized_count
-            if authorized_count > 0
-            else 1.0
-        )
-        bypass_rate = (
-            approval_bypass_count / unauthorized_count
-            if unauthorized_count > 0
-            else 0.0
-        )
+        auth_blocked = auth_layer_deny + auth_layer_require_approval
+        auth_block_rate = auth_blocked / unauthorized_count if unauthorized_count > 0 else 1.0
+        strict_deny_rate = auth_layer_deny / unauthorized_count if unauthorized_count > 0 else 1.0
+        e2e_blocked = auth_blocked + sandbox_interceptions
+        e2e_rate = min(1.0, e2e_blocked / unauthorized_count) if unauthorized_count > 0 else 1.0
+        bypass_rate = approval_bypass_count / unauthorized_count if unauthorized_count > 0 else 0.0
 
         return ToolPolicyMetrics(
             total_tool_requests=total_requests,
             unauthorized_requests=unauthorized_count,
-            unauthorized_blocking_rate=round(block_rate, 4),
-            authorized_requests=authorized_count,
-            authorized_acceptance_rate=round(accept_rate, 4),
+            auth_layer_deny_count=auth_layer_deny,
+            auth_layer_require_approval_count=auth_layer_require_approval,
+            auth_layer_blocking_rate=round(auth_block_rate, 4),
+            auth_layer_strict_deny_rate=round(strict_deny_rate, 4),
+            auth_layer_allowed_unauthorized=auth_layer_allowed_unauthorized,
+            sandbox_executor_interception_count=sandbox_interceptions,
+            end_to_end_system_blocking_rate=round(e2e_rate, 4),
             approval_bypass_rate=round(bypass_rate, 4),
         )
 

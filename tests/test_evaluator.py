@@ -95,27 +95,33 @@ def test_empty_latency_metrics():
 
 def test_pii_metrics_computation():
     pii = SecurityEvaluator.compute_pii_metrics(
-        total_samples=20,
+        total_sensitive_samples=20,
         detected_count=18,
         properly_redacted_count=18,
-        leaked_count=0,
+        unredacted_leaked_count=2,
     )
-    assert pii.detection_rate == 0.9
-    assert pii.redaction_success_rate == 1.0
-    assert pii.leakage_rate == 0.0
+    assert pii.total_sensitive_samples == 20
+    assert pii.detected_samples == 18
+    assert pii.missed_samples == 2
+    assert pii.detector_recall == 0.9
+    assert pii.redaction_success_on_detected == 1.0
+    assert pii.overall_leakage_rate == 0.1
+    assert pii.overall_privacy_preservation_rate == 0.9
 
 
 def test_tool_metrics_computation():
     tool = SecurityEvaluator.compute_tool_metrics(
         total_requests=25,
         unauthorized_count=20,
-        unauthorized_blocked_count=20,
-        authorized_count=5,
-        authorized_allowed_count=5,
+        auth_layer_deny=14,
+        auth_layer_require_approval=2,
+        auth_layer_allowed_unauthorized=4,
+        sandbox_interceptions=4,
         approval_bypass_count=0,
     )
-    assert tool.unauthorized_blocking_rate == 1.0
-    assert tool.authorized_acceptance_rate == 1.0
+    assert tool.auth_layer_blocking_rate == 0.8
+    assert tool.auth_layer_strict_deny_rate == 0.7
+    assert tool.end_to_end_system_blocking_rate == 1.0
     assert tool.approval_bypass_rate == 0.0
 
 

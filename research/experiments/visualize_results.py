@@ -1,11 +1,12 @@
 """
-PromptShield AI — Benchmark Visualization Suite
+PromptShield AI — Benchmark Visualization Suite (Audit Edition)
 Generates publication-quality charts from actual experimental benchmark outputs:
-1. Precision, Recall, and F1 Score Comparison
-2. False-Positive Rate (FPR) Comparison
-3. Latency Distribution Comparison (Mean, Median, P95 in ms)
+1. Precision, Recall, and F1 Score Comparison (Exp 1: Stratified)
+2. False-Positive Rate (FPR) Comparison across Configurations
+3. Latency Distribution Comparison (Mean, Median, P95 in ms with warm-up calibration)
 4. Confusion Matrix Grid for All 4 Configurations
 5. Per-Category Detection Performance
+6. In-Distribution vs Out-of-Distribution (OOD Grouped) Robustness Comparison
 """
 
 import json
@@ -97,7 +98,7 @@ def plot_fpr_comparison(results: dict):
     bars = ax.bar(display_names, fprs, color=colors, width=0.45, edgecolor="black", linewidth=0.8)
 
     ax.set_ylabel("False Positive Rate (%)", fontsize=11, fontweight="bold")
-    ax.set_title("PromptShield AI: False Positive Rate across Configurations", fontsize=13, fontweight="bold", pad=15)
+    ax.set_title("PromptShield AI: False Positive Rate across Configurations (Exp 1)", fontsize=13, fontweight="bold", pad=15)
     ax.set_ylim(0, max(5.0, max(fprs) * 1.5 if fprs else 5.0))
     ax.grid(axis="y", linestyle="--", alpha=0.5)
 
@@ -137,7 +138,7 @@ def plot_latency_comparison(results: dict):
     r3 = ax.bar(x + width, p95s, width, label="95th Percentile (ms)", color="#f28e2b")
 
     ax.set_ylabel("Inference Latency (Milliseconds)", fontsize=11, fontweight="bold")
-    ax.set_title("PromptShield AI: Inference Latency across Configurations", fontsize=13, fontweight="bold", pad=15)
+    ax.set_title("PromptShield AI: Calibrated Inference Latency across Configurations", fontsize=13, fontweight="bold", pad=15)
     ax.set_xticks(x)
     ax.set_xticklabels(display_names, fontsize=10)
     max_lat = max(max(means), max(p95s)) if means else 1.0
@@ -202,7 +203,7 @@ def plot_confusion_matrices(results: dict):
         ax.set_ylabel("True Class", fontsize=9, fontweight="bold")
         ax.set_xlabel("Predicted Class", fontsize=9, fontweight="bold")
 
-    plt.suptitle("PromptShield AI: Confusion Matrices by Configuration", fontsize=14, fontweight="bold", y=0.98)
+    plt.suptitle("PromptShield AI: Confusion Matrices by Configuration (Exp 1)", fontsize=14, fontweight="bold", y=0.98)
     plt.tight_layout()
     out_path = FIGURES_DIR / "confusion_matrices.png"
     plt.savefig(out_path, dpi=300)
@@ -229,7 +230,7 @@ def plot_per_category_performance(results: dict):
     r2 = ax.barh(y + height / 2, d_recalls, height, label="Config D (Gateway Recall)", color="#59a14f")
 
     ax.set_xlabel("Detection Recall (0.0 - 1.0)", fontsize=11, fontweight="bold")
-    ax.set_title("PromptShield AI: Per-Category Threat Recall", fontsize=13, fontweight="bold", pad=15)
+    ax.set_title("PromptShield AI: Per-Category Threat Recall (Exp 1)", fontsize=13, fontweight="bold", pad=15)
     ax.set_yticks(y)
     ax.set_yticklabels(display_cats, fontsize=10)
     ax.set_xlim(0, 1.15)
@@ -258,6 +259,55 @@ def plot_per_category_performance(results: dict):
     print(f"Saved: {out_path.name}")
 
 
+def plot_in_vs_out_distribution(results: dict):
+    """Chart 6: In-Distribution (Exp 1) vs Out-of-Distribution Grouped (Exp 2) Comparison."""
+    if "experiment_1_stratified" not in results or "experiment_2_grouped_ood" not in results:
+        return
+
+    exp1_cfgs = results["experiment_1_stratified"]["configurations"]
+    exp2_cfgs = results["experiment_2_grouped_ood"]["configurations"]
+    configs = list(exp1_cfgs.keys())
+    display_names = [c.replace("Config_", "").replace("_", " ") for c in configs]
+
+    f1_exp1 = [exp1_cfgs[c]["classification_metrics"]["f1"] for c in configs]
+    f1_exp2 = [exp2_cfgs[c]["classification_metrics"]["f1"] for c in configs]
+    fpr_exp1 = [exp1_cfgs[c]["classification_metrics"]["false_positive_rate"] * 100 for c in configs]
+    fpr_exp2 = [exp2_cfgs[c]["classification_metrics"]["false_positive_rate"] * 100 for c in configs]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+    x = np.arange(len(configs))
+    width = 0.35
+
+    # F1 comparison
+    ax1.bar(x - width / 2, f1_exp1, width, label="Exp 1: In-Distribution (F1)", color="#4e79a7")
+    ax1.bar(x + width / 2, f1_exp2, width, label="Exp 2: Out-of-Distribution (F1)", color="#e15759")
+    ax1.set_ylabel("F1 Score", fontsize=10, fontweight="bold")
+    ax1.set_title("F1 Score Robustness (In-Dist vs OOD)", fontsize=11, fontweight="bold")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(display_names, fontsize=9)
+    ax1.set_ylim(0, 1.15)
+    ax1.legend(loc="lower left")
+    ax1.grid(axis="y", linestyle="--", alpha=0.5)
+
+    # FPR comparison
+    ax2.bar(x - width / 2, fpr_exp1, width, label="Exp 1: In-Distribution (FPR %)", color="#59a14f")
+    ax2.bar(x + width / 2, fpr_exp2, width, label="Exp 2: Out-of-Distribution (FPR %)", color="#f28e2b")
+    ax2.set_ylabel("False Positive Rate (%)", fontsize=10, fontweight="bold")
+    ax2.set_title("False Positive Rate Comparison (In-Dist vs OOD)", fontsize=11, fontweight="bold")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(display_names, fontsize=9)
+    ax2.set_ylim(0, max(max(fpr_exp2) * 1.35, 10.0))
+    ax2.legend(loc="upper left")
+    ax2.grid(axis="y", linestyle="--", alpha=0.5)
+
+    plt.suptitle("PromptShield AI: Generalization & False-Alarm Analysis (Exp 1 vs Exp 2)", fontsize=13, fontweight="bold", y=0.98)
+    plt.tight_layout()
+    out_path = FIGURES_DIR / "experiment_comparison.png"
+    plt.savefig(out_path, dpi=300)
+    plt.close()
+    print(f"Saved: {out_path.name}")
+
+
 def main():
     print("=" * 60)
     print("PROMPTSHIELD AI — GENERATING BENCHMARK VISUALIZATIONS")
@@ -270,6 +320,7 @@ def main():
     plot_latency_comparison(results)
     plot_confusion_matrices(results)
     plot_per_category_performance(results)
+    plot_in_vs_out_distribution(results)
 
     print(f"\nAll visualization figures successfully generated in: {FIGURES_DIR}")
     print("=" * 60)
