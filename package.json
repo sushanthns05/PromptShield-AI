@@ -1,0 +1,12 @@
+{
+  "name": "promptshield-ai",
+  "private": true,
+  "version": "1.0.0",
+  "description": "PromptShield AI — Adaptive Runtime Security Gateway for LLM Applications",
+  "scripts": {
+    "frontend:install": "cd frontend && npm install",
+    "frontend:build": "cd frontend && npm run build",
+    "frontend:dev": "cd frontend && npm run dev",
+    "deploy:firebase": "firebase deploy --only hosting"
+  }
+}

@@ -122,6 +122,10 @@ else:
     allowed_origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://pomptshieldai.web.app",
+        "https://pomptshieldai.firebaseapp.com",
     ]
 
 # Security Invariant: Never allow wildcard '*' origin when allow_credentials=True

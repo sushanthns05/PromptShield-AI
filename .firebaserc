@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "surya"
+  },
+  "targets": {
+    "surya": {
+      "hosting": {
+        "pomptshieldai": [
+          "pomptshieldai"
+        ]
+      }
+    }
+  }
+}
