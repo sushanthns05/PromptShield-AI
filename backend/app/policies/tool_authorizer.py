@@ -1,13 +1,84 @@
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+from pathlib import Path
+import re
 from typing import Any, Optional, Union
+import urllib.parse
 
 from backend.app.policies.approval_manager import ApprovalManager, ApprovalStatus
 from backend.app.policies.tool_registry import ToolRegistry, ToolRiskLevel, UserRole
 from backend.app.rag.context_analyzer import TrustLevel
 
 logger = logging.getLogger("promptshield.tool_authorizer")
+
+
+def validate_safe_path(
+    path_input: Any,
+    allowed_base: Optional[Path] = None,
+) -> tuple[bool, Optional[str]]:
+    """
+    Validate that a file path parameter does not perform directory traversal,
+    null-byte injection, URL-encoding bypass, or absolute/symlink escape.
+
+    Returns (is_valid, error_reason).
+    """
+    if not isinstance(path_input, str):
+        return False, "Path must be a string"
+
+    if not path_input.strip():
+        return False, "Path cannot be empty"
+
+    # 1. Null-byte injection check (raw string)
+    if "\x00" in path_input or "\0" in path_input or "%00" in path_input.lower():
+        return False, "Null byte injection detected in path"
+
+    # 2. URL decoding & iterative unquoting (prevent double/nested URL encoding)
+    decoded = path_input
+    for _ in range(3):
+        unquoted = urllib.parse.unquote(decoded)
+        if unquoted == decoded:
+            break
+        decoded = unquoted
+
+    # Check for null byte post-decode
+    if "\x00" in decoded or "\0" in decoded:
+        return False, "Null byte injection detected in decoded path"
+
+    # 3. Backslash normalization
+    normalized = decoded.replace("\\", "/")
+
+    # 4. Directory traversal sequence checks
+    segments = normalized.split("/")
+    if ".." in segments or "../" in normalized or "/.." in normalized or normalized == "..":
+        return False, "Directory traversal ('..') sequence detected"
+
+    # Reject Windows drive letters (e.g. C:, D:)
+    if re.match(r"^[A-Za-z]:", normalized):
+        return False, "Drive letter prefix forbidden in path"
+
+    # 5. Base directory containment & absolute path escape check
+    base_dir = (allowed_base or Path.cwd()).resolve()
+
+    try:
+        if normalized.startswith("/"):
+            resolved = Path(normalized).resolve()
+        else:
+            resolved = (base_dir / normalized).resolve()
+
+        resolved.relative_to(base_dir)
+    except (ValueError, RuntimeError):
+        return False, "Path escapes allowed base directory"
+
+    # 6. Symlink escape check
+    try:
+        if resolved.is_symlink():
+            target = resolved.resolve()
+            target.relative_to(base_dir)
+    except (ValueError, RuntimeError):
+        return False, "Symlink target escapes allowed base directory"
+
+    return True, None
 
 
 class AuthDecision(str, Enum):
@@ -144,6 +215,34 @@ class ToolAuthorizer:
                 risk_level=tool.risk_level.value,
                 reasons=reasons,
             )
+
+        # 5b. Validate path parameters for directory traversal, null bytes, and sandbox escapes
+        path_param_names = {
+            "filepath",
+            "file_path",
+            "path",
+            "filename",
+            "file",
+            "dest_path",
+            "src_path",
+            "directory",
+            "dir",
+        }
+        for arg_name, arg_val in arguments.items():
+            if arg_name in path_param_names and isinstance(arg_val, str):
+                is_safe, path_err = validate_safe_path(arg_val)
+                if not is_safe:
+                    reasons.append(
+                        f"Denied: Path traversal or invalid path in argument '{arg_name}': {path_err}"
+                    )
+                    return AuthorizationResult(
+                        decision=AuthDecision.DENY,
+                        tool_name=tool_name,
+                        requester_id=requester_id,
+                        requester_role=role.value,
+                        risk_level=tool.risk_level.value,
+                        reasons=reasons,
+                    )
 
         # 6. PromptShield Risk Score Enforcement
         if risk_score >= 70:

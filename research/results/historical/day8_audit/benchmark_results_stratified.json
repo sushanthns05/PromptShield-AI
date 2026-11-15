@@ -1,0 +1,889 @@
+{
+  "experiment_name": "Experiment_1_Stratified_Split",
+  "sample_count": 81,
+  "category_counts": {
+    "direct_injection": 12,
+    "secret_leakage": 10,
+    "pii_leakage": 9,
+    "mixed_adversarial": 10,
+    "benign": 18,
+    "indirect_injection": 12,
+    "tool_abuse": 10
+  },
+  "label_counts": {
+    "1": 63,
+    "0": 18
+  },
+  "configurations": {
+    "Config_A_Rules": {
+      "classification_metrics": {
+        "accuracy": 0.4691,
+        "precision": 1.0,
+        "recall": 0.3175,
+        "f1": 0.4819,
+        "false_positive_rate": 0.0,
+        "false_negative_rate": 0.6825,
+        "true_positive_rate": 0.3175,
+        "true_negative_rate": 1.0,
+        "true_positives": 20,
+        "true_negatives": 18,
+        "false_positives": 0,
+        "false_negatives": 43,
+        "confusion_matrix": [
+          [
+            18,
+            0
+          ],
+          [
+            43,
+            20
+          ]
+        ]
+      },
+      "latency_metrics": {
+        "mean_ms": 0.04,
+        "median_ms": 0.024,
+        "p95_ms": 0.049,
+        "p99_ms": 0.268,
+        "min_ms": 0.016,
+        "max_ms": 1.09,
+        "sample_count": 81
+      },
+      "per_category_metrics": {
+        "benign": {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 1.0,
+          "true_positives": 0,
+          "true_negatives": 18,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              18,
+              0
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "sample_count": 18
+        },
+        "direct_injection": {
+          "accuracy": 0.5,
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.6667,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.5,
+          "true_positive_rate": 0.5,
+          "true_negative_rate": 0.0,
+          "true_positives": 6,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 6,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              6,
+              6
+            ]
+          ],
+          "sample_count": 12
+        },
+        "indirect_injection": {
+          "accuracy": 0.8333,
+          "precision": 1.0,
+          "recall": 0.8333,
+          "f1": 0.9091,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.1667,
+          "true_positive_rate": 0.8333,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 2,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              10
+            ]
+          ],
+          "sample_count": 12
+        },
+        "mixed_adversarial": {
+          "accuracy": 0.4,
+          "precision": 1.0,
+          "recall": 0.4,
+          "f1": 0.5714,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.6,
+          "true_positive_rate": 0.4,
+          "true_negative_rate": 0.0,
+          "true_positives": 4,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 6,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              6,
+              4
+            ]
+          ],
+          "sample_count": 10
+        },
+        "pii_leakage": {
+          "accuracy": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 1.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 0,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 9,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              9,
+              0
+            ]
+          ],
+          "sample_count": 9
+        },
+        "secret_leakage": {
+          "accuracy": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 1.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 0,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 10,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              10,
+              0
+            ]
+          ],
+          "sample_count": 10
+        },
+        "tool_abuse": {
+          "accuracy": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 1.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 0,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 10,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              10,
+              0
+            ]
+          ],
+          "sample_count": 10
+        }
+      }
+    },
+    "Config_B_ML": {
+      "classification_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "false_positive_rate": 0.0,
+        "false_negative_rate": 0.0,
+        "true_positive_rate": 1.0,
+        "true_negative_rate": 1.0,
+        "true_positives": 63,
+        "true_negatives": 18,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "confusion_matrix": [
+          [
+            18,
+            0
+          ],
+          [
+            0,
+            63
+          ]
+        ]
+      },
+      "latency_metrics": {
+        "mean_ms": 1.528,
+        "median_ms": 1.389,
+        "p95_ms": 2.466,
+        "p99_ms": 2.557,
+        "min_ms": 1.201,
+        "max_ms": 2.562,
+        "sample_count": 81
+      },
+      "per_category_metrics": {
+        "benign": {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 1.0,
+          "true_positives": 0,
+          "true_negatives": 18,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              18,
+              0
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "sample_count": 18
+        },
+        "direct_injection": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 12,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              12
+            ]
+          ],
+          "sample_count": 12
+        },
+        "indirect_injection": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 12,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              12
+            ]
+          ],
+          "sample_count": 12
+        },
+        "mixed_adversarial": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "sample_count": 10
+        },
+        "pii_leakage": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 9,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              9
+            ]
+          ],
+          "sample_count": 9
+        },
+        "secret_leakage": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "sample_count": 10
+        },
+        "tool_abuse": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "sample_count": 10
+        }
+      }
+    },
+    "Config_C_Ensemble": {
+      "classification_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "false_positive_rate": 0.0,
+        "false_negative_rate": 0.0,
+        "true_positive_rate": 1.0,
+        "true_negative_rate": 1.0,
+        "true_positives": 63,
+        "true_negatives": 18,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "confusion_matrix": [
+          [
+            18,
+            0
+          ],
+          [
+            0,
+            63
+          ]
+        ]
+      },
+      "latency_metrics": {
+        "mean_ms": 1.177,
+        "median_ms": 1.318,
+        "p95_ms": 2.448,
+        "p99_ms": 2.608,
+        "min_ms": 0.017,
+        "max_ms": 2.779,
+        "sample_count": 81
+      },
+      "per_category_metrics": {
+        "benign": {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 1.0,
+          "true_positives": 0,
+          "true_negatives": 18,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              18,
+              0
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "sample_count": 18
+        },
+        "direct_injection": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 12,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              12
+            ]
+          ],
+          "sample_count": 12
+        },
+        "indirect_injection": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 12,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              12
+            ]
+          ],
+          "sample_count": 12
+        },
+        "mixed_adversarial": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "sample_count": 10
+        },
+        "pii_leakage": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 9,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              9
+            ]
+          ],
+          "sample_count": 9
+        },
+        "secret_leakage": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "sample_count": 10
+        },
+        "tool_abuse": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              10
+            ]
+          ],
+          "sample_count": 10
+        }
+      }
+    },
+    "Config_D_Gateway": {
+      "classification_metrics": {
+        "accuracy": 0.7778,
+        "precision": 1.0,
+        "recall": 0.7143,
+        "f1": 0.8333,
+        "false_positive_rate": 0.0,
+        "false_negative_rate": 0.2857,
+        "true_positive_rate": 0.7143,
+        "true_negative_rate": 1.0,
+        "true_positives": 45,
+        "true_negatives": 18,
+        "false_positives": 0,
+        "false_negatives": 18,
+        "confusion_matrix": [
+          [
+            18,
+            0
+          ],
+          [
+            18,
+            45
+          ]
+        ]
+      },
+      "latency_metrics": {
+        "mean_ms": 1.439,
+        "median_ms": 1.424,
+        "p95_ms": 2.564,
+        "p99_ms": 2.97,
+        "min_ms": 0.024,
+        "max_ms": 3.443,
+        "sample_count": 81
+      },
+      "per_category_metrics": {
+        "benign": {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 0.0,
+          "true_negative_rate": 1.0,
+          "true_positives": 0,
+          "true_negatives": 18,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              18,
+              0
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "sample_count": 18
+        },
+        "direct_injection": {
+          "accuracy": 0.3333,
+          "precision": 1.0,
+          "recall": 0.3333,
+          "f1": 0.5,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.6667,
+          "true_positive_rate": 0.3333,
+          "true_negative_rate": 0.0,
+          "true_positives": 4,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 8,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              8,
+              4
+            ]
+          ],
+          "sample_count": 12
+        },
+        "indirect_injection": {
+          "accuracy": 0.8333,
+          "precision": 1.0,
+          "recall": 0.8333,
+          "f1": 0.9091,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.1667,
+          "true_positive_rate": 0.8333,
+          "true_negative_rate": 0.0,
+          "true_positives": 10,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 2,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              10
+            ]
+          ],
+          "sample_count": 12
+        },
+        "mixed_adversarial": {
+          "accuracy": 0.6,
+          "precision": 1.0,
+          "recall": 0.6,
+          "f1": 0.75,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.4,
+          "true_positive_rate": 0.6,
+          "true_negative_rate": 0.0,
+          "true_positives": 6,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 4,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              4,
+              6
+            ]
+          ],
+          "sample_count": 10
+        },
+        "pii_leakage": {
+          "accuracy": 1.0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.0,
+          "true_positive_rate": 1.0,
+          "true_negative_rate": 0.0,
+          "true_positives": 9,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              9
+            ]
+          ],
+          "sample_count": 9
+        },
+        "secret_leakage": {
+          "accuracy": 0.8,
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.8889,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.2,
+          "true_positive_rate": 0.8,
+          "true_negative_rate": 0.0,
+          "true_positives": 8,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 2,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              8
+            ]
+          ],
+          "sample_count": 10
+        },
+        "tool_abuse": {
+          "accuracy": 0.8,
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.8889,
+          "false_positive_rate": 0.0,
+          "false_negative_rate": 0.2,
+          "true_positive_rate": 0.8,
+          "true_negative_rate": 0.0,
+          "true_positives": 8,
+          "true_negatives": 0,
+          "false_positives": 0,
+          "false_negatives": 2,
+          "confusion_matrix": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              8
+            ]
+          ],
+          "sample_count": 10
+        }
+      }
+    }
+  },
+  "pii_secret_evaluation": {
+    "total_sensitive_samples": 29,
+    "detected_samples": 23,
+    "missed_samples": 6,
+    "detector_recall": 0.7931,
+    "redaction_success_on_detected": 1.0,
+    "unredacted_leakage_count": 6,
+    "overall_leakage_rate": 0.2069,
+    "overall_privacy_preservation_rate": 0.7931
+  },
+  "tool_policy_evaluation": {
+    "total_tool_requests": 10,
+    "unauthorized_requests": 10,
+    "auth_layer_deny_count": 7,
+    "auth_layer_require_approval_count": 1,
+    "auth_layer_blocking_rate": 0.8,
+    "auth_layer_strict_deny_rate": 0.7,
+    "auth_layer_allowed_unauthorized": 2,
+    "sandbox_executor_interception_count": 2,
+    "end_to_end_system_blocking_rate": 1.0,
+    "approval_bypass_rate": 0.0
+  }
+}

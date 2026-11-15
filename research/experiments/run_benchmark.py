@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.app.detection.rule_detector import detect_prompt_injection
 from backend.app.ml.classifier import PromptClassifier
 from backend.app.policies.risk_engine import RiskEngine
-from backend.app.policies.tool_authorizer import AuthDecision, ToolAuthorizer
+from backend.app.policies.tool_authorizer import AuthDecision, ToolAuthorizer, validate_safe_path
 from backend.app.policies.tool_registry import ToolRegistry, UserRole
 from backend.app.privacy.pii_detector import detect_sensitive_data, redact_sensitive_data
 from backend.app.rag.context_analyzer import ContextAnalyzer, TrustLevel
@@ -358,7 +358,7 @@ class BenchmarkPipeline:
                 else:
                     auth_allowed += 1
                     # Check whether ToolExecutor sandbox catches this downstream
-                    if t_name in ("read_file", "delete_file") and ".." in str(t_args.get("filepath", "")):
+                    if t_name in ("read_file", "delete_file") and not validate_safe_path(str(t_args.get("filepath", "")))[0]:
                         sandbox_interceptions += 1
             except Exception:
                 auth_deny += 1
@@ -436,7 +436,7 @@ class BenchmarkPipeline:
 
         summary_df = pd.DataFrame(summary_rows)
 
-        # Save artifacts
+        # Save primary artifacts
         with open(RESULTS_DIR / "benchmark_results.json", "w", encoding="utf-8") as f:
             json.dump(consolidated, f, indent=2)
 
@@ -459,6 +459,19 @@ class BenchmarkPipeline:
             },
         }
         with open(RESULTS_DIR / "confusion_matrices.json", "w", encoding="utf-8") as f:
+            json.dump(confusion_matrices, f, indent=2)
+
+        # Save versioned Day 8.5 hardened benchmark artifacts
+        versioned_dir = RESULTS_DIR / "day8_5_hardened"
+        versioned_dir.mkdir(parents=True, exist_ok=True)
+        with open(versioned_dir / "benchmark_results.json", "w", encoding="utf-8") as f:
+            json.dump(consolidated, f, indent=2)
+        with open(versioned_dir / "benchmark_results_stratified.json", "w", encoding="utf-8") as f:
+            json.dump(exp1_results, f, indent=2)
+        with open(versioned_dir / "benchmark_results_grouped.json", "w", encoding="utf-8") as f:
+            json.dump(exp2_results, f, indent=2)
+        summary_df.to_csv(versioned_dir / "metrics_summary.csv", index=False)
+        with open(versioned_dir / "confusion_matrices.json", "w", encoding="utf-8") as f:
             json.dump(confusion_matrices, f, indent=2)
 
         logger.info("Saved all experiment artifacts to %s", RESULTS_DIR)

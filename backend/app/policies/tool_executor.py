@@ -5,7 +5,7 @@ from typing import Any, Optional, Union
 from uuid import uuid4
 
 from backend.app.policies.approval_manager import ApprovalManager
-from backend.app.policies.tool_authorizer import AuthDecision, ToolAuthorizer
+from backend.app.policies.tool_authorizer import AuthDecision, ToolAuthorizer, validate_safe_path
 from backend.app.policies.tool_registry import ToolRegistry, UserRole
 from backend.app.privacy.pii_detector import redact_sensitive_data
 from backend.app.rag.context_analyzer import TrustLevel
@@ -158,10 +158,11 @@ class ToolExecutor:
         elif name == "read_file":
             filepath = str(args.get("filepath", ""))
             redacted_path = redact_sensitive_data(filepath)
-            # Prevent directory traversal simulation
-            if ".." in filepath:
+            # Independent execution sandbox validation (defense-in-depth even if authorizer is bypassed)
+            is_safe, path_err = validate_safe_path(filepath)
+            if not is_safe:
                 return {
-                    "error": "Directory traversal characters '..' are forbidden",
+                    "error": f"Directory traversal or invalid path rejected by execution sandbox: {path_err}",
                     "filepath": redacted_path,
                 }
             return {
@@ -181,11 +182,19 @@ class ToolExecutor:
             }
 
         elif name == "delete_file":
-            filepath = redact_sensitive_data(str(args.get("filepath", "")))
+            filepath = str(args.get("filepath", ""))
+            redacted_path = redact_sensitive_data(filepath)
+            # Independent execution sandbox validation (defense-in-depth even if authorizer is bypassed)
+            is_safe, path_err = validate_safe_path(filepath)
+            if not is_safe:
+                return {
+                    "error": f"Directory traversal or invalid path rejected by execution sandbox: {path_err}",
+                    "filepath": redacted_path,
+                }
             return {
                 "status": "deleted",
-                "filepath": filepath,
-                "message": f"Simulated deletion of {filepath}",
+                "filepath": redacted_path,
+                "message": f"Simulated deletion of {redacted_path}",
             }
 
         elif name == "execute_command":

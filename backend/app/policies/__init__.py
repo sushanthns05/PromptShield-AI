@@ -8,6 +8,7 @@ from backend.app.policies.tool_authorizer import (
     AuthDecision,
     AuthorizationResult,
     ToolAuthorizer,
+    validate_safe_path,
 )
 from backend.app.policies.tool_executor import ExecutionResult, ToolExecutor
 from backend.app.policies.tool_registry import (
@@ -28,6 +29,7 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalStatus",
     "ToolAuthorizer",
+    "validate_safe_path",
     "AuthDecision",
     "AuthorizationResult",
     "ToolExecutor",

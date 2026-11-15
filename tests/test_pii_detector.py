@@ -75,3 +75,101 @@ def test_empty_text():
 def test_invalid_input():
     with pytest.raises(TypeError):
         detect_sensitive_data(None)
+
+
+# ---------------------------------------------------------------------------
+# Day 8.5 Security Hardening Regression Tests: PII & Credential Detector
+# ---------------------------------------------------------------------------
+
+
+def test_detect_documented_openai_project_and_admin_keys():
+    text = (
+        "Project key: sk-proj-123456789012345678901234 and "
+        "admin key: sk-admin-098765432109876543210987 and "
+        "service key: sk-svcacct-112233445566778899001122"
+    )
+    findings = detect_sensitive_data(text)
+    openai_findings = [f for f in findings if f["type"] == "OPENAI_API_KEY"]
+    assert len(openai_findings) == 3
+    for f in openai_findings:
+        assert f["format"] == "documented"
+        assert f["category"] == "SECRET"
+
+
+def test_detect_synthetic_benchmark_tokens():
+    text = (
+        "Probe 1: sk-attackerKey123456. "
+        "Probe 2: sk-summaryToken1234. "
+        "Probe 3: sk-exfilToken123456789. "
+        "Probe 4: sk-articleKey12345."
+    )
+    findings = detect_sensitive_data(text)
+    syn_findings = [f for f in findings if f["type"] == "SYNTHETIC_API_KEY"]
+    assert len(syn_findings) == 4
+    for f in syn_findings:
+        assert f["format"] == "synthetic"
+        assert f["category"] == "SECRET"
+
+    redacted = redact_sensitive_data(text)
+    assert "sk-attackerKey123456" not in redacted
+    assert "sk-summaryToken1234" not in redacted
+    assert "[REDACTED_SYNTHETIC_API_KEY]" in redacted
+
+
+def test_detect_synthetic_aws_keys():
+    text = (
+        "MinIO user: AKIAMINIOSTORAGEUSER12, "
+        "deploy token: AKIAPRODDEPLOY123456789, "
+        "terraform: AKIATERRAFORMUSER9988"
+    )
+    findings = detect_sensitive_data(text)
+    syn_aws = [f for f in findings if f["type"] == "SYNTHETIC_AWS_KEY"]
+    assert len(syn_aws) == 3
+    for f in syn_aws:
+        assert f["format"] == "synthetic"
+        assert f["category"] == "SECRET"
+
+    redacted = redact_sensitive_data(text)
+    assert "AKIAMINIOSTORAGEUSER12" not in redacted
+    assert "[REDACTED_SYNTHETIC_AWS_KEY]" in redacted
+
+
+def test_detect_documented_aws_keys_and_sts():
+    text = "IAM user: AKIAIOSFODNN7EXAMPLE, STS session: ASIAIOSFODNN7EXAMPLE"
+    findings = detect_sensitive_data(text)
+    aws_findings = [f for f in findings if f["type"] == "AWS_ACCESS_KEY"]
+    assert len(aws_findings) == 2
+    for f in aws_findings:
+        assert f["format"] == "documented"
+        assert f["category"] == "SECRET"
+
+
+def test_benign_lookalikes_not_detected():
+    benign_text = (
+        "We use sk-learn and scikit-learn for model training. "
+        "The sk-model pipeline and sk-image library are standard tools. "
+        "Check sk-test and sk-fake-token in development documentation."
+    )
+    findings = detect_sensitive_data(benign_text)
+    assert len(findings) == 0
+    assert redact_sensitive_data(benign_text) == benign_text
+
+
+def test_short_and_malformed_tokens_not_detected():
+    malformed_samples = [
+        "sk-",
+        "sk-1",
+        "sk-abc",
+        "sk-123",
+        "sk-short",
+        "AKIA",
+        "AKIA123",
+        "AKIAMALFORMED",
+        "AKIA_TEST",
+        "AKIA-KEY",
+        "akiaiosfodnn7example",
+        "AKIA" + "A" * 35,  # 39 chars total, exceeds max 32
+    ]
+    for sample in malformed_samples:
+        findings = detect_sensitive_data(sample)
+        assert len(findings) == 0, f"Malformed sample '{sample}' was falsely detected as sensitive: {findings}"

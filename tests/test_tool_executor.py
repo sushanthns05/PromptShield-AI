@@ -153,15 +153,51 @@ def test_executor_blocks_unauthorized_role(executor):
 
 
 def test_executor_directory_traversal_protection(executor):
-    result = executor.execute(
+    # Defense-in-depth Layer 1: Authorization layer rejects traversal prior to execution
+    with pytest.raises(PermissionError, match="Path traversal"):
+        executor.execute(
+            tool_name="read_file",
+            arguments={"filepath": "../../etc/passwd"},
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+
+    # Defense-in-depth Layer 2: Executor sandbox independently rejects traversal if authorizer is bypassed
+    direct_sim = executor._run_simulated_tool("read_file", {"filepath": "../../etc/passwd"})
+    assert "error" in direct_sim
+    assert "Directory traversal" in direct_sim["error"]
+
+
+def test_executor_sandbox_blocks_traversal_if_authorizer_bypassed(registry, approval_manager):
+    """
+    Defense-in-depth: Even if a permissive or buggy authorizer allows a traversal path,
+    the executor's execution sandbox MUST independently detect and block it.
+    """
+    class PermissiveMockAuthorizer:
+        def authorize(self, **kwargs):
+            from backend.app.policies.tool_authorizer import AuthDecision, AuthorizationResult
+            return AuthorizationResult(
+                decision=AuthDecision.ALLOW,
+                tool_name=kwargs.get("tool_name", "read_file"),
+                requester_id=kwargs.get("requester_id", "dev-01"),
+                requester_role="DEVELOPER",
+                risk_level="MEDIUM",
+            )
+
+    bypassed_executor = ToolExecutor(
+        authorizer=PermissiveMockAuthorizer(),
+        approval_manager=approval_manager,
+        registry=registry,
+    )
+    result = bypassed_executor.execute(
         tool_name="read_file",
-        arguments={"filepath": "../../etc/passwd"},
+        arguments={"filepath": "../../etc/shadow"},
         requester_id="dev-01",
         requester_role=UserRole.DEVELOPER,
     )
     assert result.status == "SUCCESS"
     assert "error" in result.result
-    assert "Directory traversal" in result.result["error"]
+    assert "Directory traversal or invalid path rejected by execution sandbox" in result.result["error"]
 
 
 def test_executor_command_never_invokes_real_shell(executor, registry, approval_manager):

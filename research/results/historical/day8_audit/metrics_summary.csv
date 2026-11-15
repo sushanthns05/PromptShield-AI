@@ -1,0 +1,9 @@
+Experiment,Configuration,Accuracy,Precision,Recall,F1_Score,False_Positive_Rate,False_Negative_Rate,Mean_Latency_ms,Median_Latency_ms,P95_Latency_ms
+Exp1_Stratified,Config_A_Rules,0.4691,1.0,0.3175,0.4819,0.0,0.6825,0.04,0.024,0.049
+Exp1_Stratified,Config_B_ML,1.0,1.0,1.0,1.0,0.0,0.0,1.528,1.389,2.466
+Exp1_Stratified,Config_C_Ensemble,1.0,1.0,1.0,1.0,0.0,0.0,1.177,1.318,2.448
+Exp1_Stratified,Config_D_Gateway,0.7778,1.0,0.7143,0.8333,0.0,0.2857,1.439,1.424,2.564
+Exp2_Grouped_OOD,Config_A_Rules,0.4558,0.98,0.297,0.4558,0.02,0.703,0.031,0.028,0.055
+Exp2_Grouped_OOD,Config_B_ML,0.9581,0.9643,0.9818,0.973,0.12,0.0182,1.795,1.72,2.546
+Exp2_Grouped_OOD,Config_C_Ensemble,0.9535,0.9586,0.9818,0.9701,0.14,0.0182,1.466,1.708,2.646
+Exp2_Grouped_OOD,Config_D_Gateway,0.7581,0.9913,0.6909,0.8143,0.02,0.3091,1.724,1.764,2.663

@@ -1,0 +1,86 @@
+{
+  "Exp1_Stratified": {
+    "Config_A_Rules": [
+      [
+        18,
+        0
+      ],
+      [
+        43,
+        20
+      ]
+    ],
+    "Config_B_ML": [
+      [
+        18,
+        0
+      ],
+      [
+        0,
+        63
+      ]
+    ],
+    "Config_C_Ensemble": [
+      [
+        18,
+        0
+      ],
+      [
+        0,
+        63
+      ]
+    ],
+    "Config_D_Gateway": [
+      [
+        18,
+        0
+      ],
+      [
+        10,
+        53
+      ]
+    ]
+  },
+  "Exp2_Grouped_OOD": {
+    "Config_A_Rules": [
+      [
+        49,
+        1
+      ],
+      [
+        116,
+        49
+      ]
+    ],
+    "Config_B_ML": [
+      [
+        44,
+        6
+      ],
+      [
+        3,
+        162
+      ]
+    ],
+    "Config_C_Ensemble": [
+      [
+        43,
+        7
+      ],
+      [
+        3,
+        162
+      ]
+    ],
+    "Config_D_Gateway": [
+      [
+        49,
+        1
+      ],
+      [
+        42,
+        123
+      ]
+    ]
+  }
+}

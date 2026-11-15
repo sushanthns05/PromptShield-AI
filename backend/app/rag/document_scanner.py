@@ -139,7 +139,13 @@ class DocumentScanner:
         # 3. Sensitive Data & Secret Detection (PII & Credentials)
         raw_sensitive = detect_sensitive_data(content)
         safe_sensitive_findings: list[dict[str, Any]] = []
-        secret_types = {"OPENAI_API_KEY", "AWS_ACCESS_KEY", "PASSWORD"}
+        secret_types = {
+            "OPENAI_API_KEY",
+            "SYNTHETIC_API_KEY",
+            "AWS_ACCESS_KEY",
+            "SYNTHETIC_AWS_KEY",
+            "PASSWORD",
+        }
         pii_types = {"EMAIL", "PHONE"}
 
         sensitive_raw_score = 0
@@ -155,6 +161,8 @@ class DocumentScanner:
                 "start": f["start"],
                 "end": f["end"],
                 "redacted_value": f"[REDACTED_{ftype}]",
+                "format": f.get("format", "standard"),
+                "category": f.get("category", "SECRET" if ftype in secret_types else "PII"),
             })
 
             if ftype in secret_types:

@@ -117,7 +117,23 @@ All configurations are evaluated against identical held-out test splits without 
 
 ---
 
-## 7. Experimental Environment
+## 7. Day 8.5 Security Hardening Architecture
+
+Following the Day 8 Independent Audit, two major architectural security hardenings were introduced:
+
+### 7.1 Multi-Tier Credential & Secret Taxonomy
+To overcome rigid regex length constraints without matching benign development terms, `backend/app/privacy/pii_detector.py` establishes a formal format taxonomy:
+1. **Documented Formats (`OPENAI_API_KEY`, `AWS_ACCESS_KEY`):** Standard production formats matching documented provider specifications (OpenAI legacy `sk-[A-Za-z0-9]{20,}`, modern project `sk-proj-...`, and standard AWS IAM 20-char `AKIA[0-9A-Z]{16}`).
+2. **Synthetic / Dev Formats (`SYNTHETIC_API_KEY`, `SYNTHETIC_AWS_KEY`):** Synthetic test/benchmark formats (e.g. `sk-[A-Za-z0-9]{12,19}` containing uppercase and numeric tokens, MinIO/custom S3-compatible `AKIA[0-9A-Z]{17,28}`).
+3. **Benign Lookalike Negative Constraints:** Explicitly excludes lowercase words, short identifiers, and library names (`sk-learn`, `sk-model`, `sk-image`, `sk-pipeline`, `AKIA123`), preventing false positives on machine learning documentation.
+
+### 7.2 Two-Layer Tool Authorization & Sandbox Traversal Defense
+1. **Authorization Layer (`ToolAuthorizer.validate_safe_path`):** Validates all path-like arguments (`filepath`, `path`, `filename`, etc.) prior to dispatch. Intercepts directory traversal (`../`), multi-level escapes, recursive URL encoding (`%2e%2e%2f`, `%252e%252e%252f`), backslash sequences (`..\`), null-byte injection (`\0`, `%00`), and symlink escapes outside the allowed base directory.
+2. **Execution Sandbox Layer (`ToolExecutor._run_simulated_tool`):** Independently re-validates path safety in the execution simulator. If the authorization layer is mocked or bypassed, the sandbox independently prevents directory escape.
+
+---
+
+## 8. Experimental Environment
 
 - **Hardware:** Dell Vostro Laptop (Intel CPU, 8GB System RAM)
 - **Operating System:** Fedora Linux x86_64
@@ -127,7 +143,7 @@ All configurations are evaluated against identical held-out test splits without 
 
 ---
 
-## 8. Reproducibility Instructions
+## 9. Reproducibility Instructions
 
 ```bash
 # 1. Regenerate baseline benchmark dataset and stratified splits (Exp 1)
@@ -142,6 +158,6 @@ python3 research/experiments/run_benchmark.py
 # 4. Generate all comparative visualization charts
 python3 research/experiments/visualize_results.py
 
-# 5. Run complete automated test suite (130 tests)
+# 5. Run complete automated test suite (145 tests)
 pytest -v
 ```

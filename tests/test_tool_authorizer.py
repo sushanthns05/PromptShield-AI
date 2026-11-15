@@ -267,3 +267,108 @@ def test_approval_token_cannot_be_reused_by_different_requester(authorizer, appr
     )
     assert res.decision == AuthDecision.DENY
     assert any("bound to requester 'legitimate-dev', not 'attacker-dev'" in r for r in res.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Day 8.5 Security Hardening Regression Tests: Path Validation in Authorizer
+# ---------------------------------------------------------------------------
+
+
+def test_path_traversal_dot_dot_slash_denied(authorizer):
+    res = authorizer.authorize(
+        tool_name="read_file",
+        arguments={"filepath": "../app.env"},
+        requester_id="dev-01",
+        requester_role=UserRole.DEVELOPER,
+    )
+    assert res.decision == AuthDecision.DENY
+    assert any("Path traversal" in r for r in res.reasons)
+
+
+def test_path_traversal_multilevel_denied(authorizer):
+    res = authorizer.authorize(
+        tool_name="read_file",
+        arguments={"filepath": "../../../../var/log/audit.log"},
+        requester_id="dev-01",
+        requester_role=UserRole.DEVELOPER,
+    )
+    assert res.decision == AuthDecision.DENY
+    assert any("Path traversal" in r for r in res.reasons)
+
+
+def test_absolute_path_outside_allowed_base_denied(authorizer):
+    for bad_path in ["/etc/passwd", "/var/log/audit.log", "C:\\Windows\\System32\\cmd.exe"]:
+        res = authorizer.authorize(
+            tool_name="read_file",
+            arguments={"filepath": bad_path},
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+        assert res.decision == AuthDecision.DENY
+        assert any("escapes allowed base" in r or "forbidden" in r or "traversal" in r for r in res.reasons)
+
+
+def test_url_encoded_path_traversal_denied(authorizer):
+    for encoded_path in ["%2e%2e%2fapp.env", "%2e%2e/app.env", "..%2fapp.env", "%252e%252e%252fapp.env"]:
+        res = authorizer.authorize(
+            tool_name="read_file",
+            arguments={"filepath": encoded_path},
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+        assert res.decision == AuthDecision.DENY
+        assert any("Path traversal" in r for r in res.reasons)
+
+
+def test_backslash_path_traversal_denied(authorizer):
+    for win_path in ["..\\app.env", "..\\..\\config.yaml", "..\\..\\windows\\system32\\config"]:
+        res = authorizer.authorize(
+            tool_name="read_file",
+            arguments={"filepath": win_path},
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+        assert res.decision == AuthDecision.DENY
+        assert any("Path traversal" in r for r in res.reasons)
+
+
+def test_null_byte_path_traversal_denied(authorizer):
+    for null_path in ["config.yaml\0.png", "config.yaml\x00.txt", "config.yaml%00.txt"]:
+        res = authorizer.authorize(
+            tool_name="read_file",
+            arguments={"filepath": null_path},
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+        assert res.decision == AuthDecision.DENY
+        assert any("Null byte" in r for r in res.reasons)
+
+
+def test_symlink_escape_denied(authorizer, tmp_path):
+    # Create an outside target and a symlink inside the workspace
+    outside_dir = tmp_path / "outside_secret"
+    outside_dir.mkdir()
+    secret_file = outside_dir / "secret.env"
+    secret_file.write_text("SUPER_SECRET=123")
+
+    inside_dir = tmp_path / "sandbox_workspace"
+    inside_dir.mkdir()
+    symlink_path = inside_dir / "escape_link.env"
+    symlink_path.symlink_to(secret_file)
+
+    # Validate safe path with explicit allowed base
+    from backend.app.policies.tool_authorizer import validate_safe_path
+    is_safe, err = validate_safe_path(str(symlink_path), allowed_base=inside_dir)
+    assert not is_safe
+    assert "escapes allowed base directory" in err
+
+
+def test_legitimate_relative_paths_allowed(authorizer):
+    for safe_path in ["config.yaml", "docs/README.md", "src/main.py"]:
+        res = authorizer.authorize(
+            tool_name="read_file",
+            arguments={"filepath": safe_path},
+            requester_id="dev-01",
+            requester_role=UserRole.DEVELOPER,
+        )
+        assert res.decision == AuthDecision.ALLOW
