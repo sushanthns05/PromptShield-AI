@@ -1,0 +1,74 @@
+{
+  "dataset_name": "PromptShield-AI-Benchmark",
+  "version": "1.0.0",
+  "generated_at": "2026-11-15T13:20:56.925702+00:00",
+  "random_seed": 42,
+  "total_samples": 535,
+  "category_distribution": {
+    "benign": 120,
+    "direct_injection": 80,
+    "indirect_injection": 75,
+    "pii_leakage": 65,
+    "secret_leakage": 65,
+    "tool_abuse": 65,
+    "mixed_adversarial": 65
+  },
+  "label_distribution": {
+    "1": 415,
+    "0": 120
+  },
+  "difficulty_distribution": {
+    "hard": 210,
+    "easy": 194,
+    "medium": 131
+  },
+  "splits": {
+    "train": {
+      "count": 374,
+      "ratio": 0.6991,
+      "category_breakdown": {
+        "benign": 84,
+        "direct_injection": 56,
+        "indirect_injection": 52,
+        "tool_abuse": 46,
+        "pii_leakage": 46,
+        "mixed_adversarial": 45,
+        "secret_leakage": 45
+      },
+      "sha256": "eaa49a83ef0447d495c19a55043792cbfbabb367e80e44c079a375b3a00f7436"
+    },
+    "val": {
+      "count": 80,
+      "ratio": 0.1495,
+      "category_breakdown": {
+        "benign": 18,
+        "direct_injection": 12,
+        "indirect_injection": 11,
+        "mixed_adversarial": 10,
+        "pii_leakage": 10,
+        "secret_leakage": 10,
+        "tool_abuse": 9
+      },
+      "sha256": "f15fd4251ad6081756b4d8c6ac4361873af1e28d86a52add72817218ec8b7543"
+    },
+    "test": {
+      "count": 81,
+      "ratio": 0.1514,
+      "category_breakdown": {
+        "benign": 18,
+        "direct_injection": 12,
+        "indirect_injection": 12,
+        "secret_leakage": 10,
+        "mixed_adversarial": 10,
+        "tool_abuse": 10,
+        "pii_leakage": 9
+      },
+      "sha256": "60d595db8f665477a95d32551bb0792982864bb19720e0f846b0eae4d5e411fe"
+    }
+  },
+  "leakage_verification": {
+    "train_test_id_overlap": 0,
+    "train_test_text_overlap": 0,
+    "status": "VERIFIED_ZERO_LEAKAGE"
+  }
+}

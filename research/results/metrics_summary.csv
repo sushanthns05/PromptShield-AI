@@ -1,0 +1,5 @@
+Configuration,Accuracy,Precision,Recall,F1_Score,False_Positive_Rate,False_Negative_Rate,Mean_Latency_ms,Median_Latency_ms,P95_Latency_ms
+Config_A_Rules,0.4691,1.0,0.3175,0.4819,0.0,0.6825,0.076,0.03,0.093
+Config_B_ML,1.0,1.0,1.0,1.0,0.0,0.0,1.958,1.798,2.729
+Config_C_Ensemble,1.0,1.0,1.0,1.0,0.0,0.0,1.447,1.672,2.587
+Config_D_Gateway,0.7778,1.0,0.7143,0.8333,0.0,0.2857,1.795,1.916,2.69
