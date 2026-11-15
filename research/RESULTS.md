@@ -21,15 +21,19 @@ The table below contrasts the baseline performance measured during the Day 8 ind
 | **Secret Detector Recall (Exp 2 OOD)** | 85.71% (60/70) | **100.00% (70/70)** | **+14.29%** | Full coverage of out-of-distribution synthetic tokens |
 | **Sensitive Leakage Rate (Exp 2 OOD)** | 14.29% (10/70 leaked) | **0.00% (0/70 leaked)** | **-14.29% (Zero Leakage)** | Elimination of unredacted secret leaks in RAG/mixed documents |
 | **Tool Auth Blocking Rate (Exp 1)** | 80.00% (8/10) | **100.00% (10/10)** | **+20.00%** | Directory traversal blocked directly at authorization layer |
-| **Tool Auth Blocking Rate (Exp 2 OOD)**| 85.00% (17/20) | **95.00% (19/20)** | **+10.00%** | Multi-level and backslash traversal blocked at authorizer |
+| **Tool Auth Blocking Rate (Exp 2 OOD)**| 85.00% (17/20) | **100.00% (20/20)** | **+15.00%** | Directory traversal, backslash, and schema type errors blocked at authorizer |
 | **Executor Sandbox Interceptions (Exp 1)**| 2 (Traversals) | **0 (Traversals)** | **-2 (Stopped upstream)**| Authorizer stopped attacks before reaching executor sandbox |
-| **End-to-End Tool Containment (Exp 1)** | 100.00% (10/10) | **100.00% (10/10)** | **Maintained (100%)** | Two-layer defense-in-depth verified |
+| **End-to-End Tool Containment (Exp 1)** | 100.00% (10/10) | **100.00% (10/10)** | **Maintained (100%)** | Two-layer defense-in-depth verified on evaluated tool cases |
+| **End-to-End Tool Containment (Exp 2 OOD)**| 95.00% (19/20) | **100.00% (20/20)** | **+5.00%** | Strict Pydantic argument schemas eliminated type-confusion probe |
 | **Gateway Policy Recall (Exp 1)** | 71.43% (45/63) | **84.13% (53/63)** | **+12.70%** | Higher composite risk scores from detected secret tokens |
 | **Gateway Policy Accuracy (Exp 1)** | 77.78% (63/81) | **87.65% (71/81)** | **+9.87%** | 8 additional threats correctly mitigated without false alarms |
 | **Gateway Policy F1-Score (Exp 1)** | 0.8333 | **0.9138** | **+0.0805** | Balanced precision and threat mitigation |
+| **Gateway Policy Recall (Exp 2 OOD)** | 69.09% (114/165) | **75.15% (124/165)** | **+6.06%** | Improved credential and tool attack mitigation on OOD prompts |
+| **Gateway Policy Accuracy (Exp 2 OOD)**| 75.81% (163/215) | **80.47% (173/215)** | **+4.66%** | 10 additional OOD attacks neutralized without increasing FPR |
+| **Gateway Policy F1-Score (Exp 2 OOD)**| 0.8143 | **0.8552** | **+0.0409** | Robust generalization on unseen adversarial templates |
 | **Benign False Positive Rate (Exp 1)**| 0.00% (0/18) | **0.00% (0/18)** | **Maintained (0.00%)** | Zero false alarms on standard benign inputs |
 | **Benign False Positive Rate (Exp 2)**| 2.00% (1/50) | **2.00% (1/50)** | **Maintained (2.00%)** | Gateway policy bounds ML risk, preventing alert fatigue |
-| **Gateway Median Latency (Exp 1)** | 1.424 ms | **1.783 ms** | +0.359 ms | Negligible overhead for multi-credential & path checks |
+| **Gateway Median Latency (Exp 1)** | 1.424 ms | **1.818 ms** | +0.394 ms | Negligible overhead for multi-credential & path checks |
 
 ---
 
@@ -43,10 +47,10 @@ All latencies were measured following a 10-iteration warm-up sequence to elimina
 
 | Configuration | Accuracy | Precision | Recall (TPR) | F1-Score | False Positive Rate (FPR) | False Negative Rate (FNR) | Mean Latency (ms) | Median Latency (ms) | P95 Latency (ms) |
 |---|---|---|---|---|---|---|---|---|---|
-| **Config A: Rule-Only** | 0.4691 | 1.0000 | 0.3175 | 0.4819 | **0.0000** | 0.6825 | **0.045 ms** | **0.029 ms** | **0.060 ms** |
-| **Config B: ML-Only** | 1.0000 | 1.0000 | 1.0000 | 1.0000 | **0.0000** | 0.0000 | 1.798 ms | 1.713 ms | 2.401 ms |
-| **Config C: Ensemble** | 1.0000 | 1.0000 | 1.0000 | 1.0000 | **0.0000** | 0.0000 | 1.320 ms | 1.505 ms | 2.307 ms |
-| **Config D: Gateway Policy** | **0.8765** | **1.0000** | **0.8413** | **0.9138** | **0.0000** | **0.1587** | 1.646 ms | 1.783 ms | 2.245 ms |
+| **Config A: Rule-Only** | 0.4691 | 1.0000 | 0.3175 | 0.4819 | **0.0000** | 0.6825 | **0.032 ms** | **0.027 ms** | **0.059 ms** |
+| **Config B: ML-Only** | 1.0000 | 1.0000 | 1.0000 | 1.0000 | **0.0000** | 0.0000 | 1.869 ms | 1.714 ms | 2.820 ms |
+| **Config C: Ensemble** | 1.0000 | 1.0000 | 1.0000 | 1.0000 | **0.0000** | 0.0000 | 1.428 ms | 1.533 ms | 2.842 ms |
+| **Config D: Gateway Policy** | **0.8765** | **1.0000** | **0.8413** | **0.9138** | **0.0000** | **0.1587** | 1.706 ms | 1.818 ms | 2.863 ms |
 
 ### 2.2 Confusion Matrices ($N = 81$)
 
@@ -84,10 +88,10 @@ The OOD partition isolates 11 semantic groups containing unseen templates, parap
 
 | Configuration | Accuracy | Precision | Recall (TPR) | F1-Score | False Positive Rate (FPR) | False Negative Rate (FNR) | Mean Latency (ms) | Median Latency (ms) | P95 Latency (ms) |
 |---|---|---|---|---|---|---|---|---|---|
-| **Config A: Rule-Only** | 0.4558 | 0.9800 | 0.2970 | 0.4558 | 0.0200 | 0.7030 | 0.029 ms | 0.023 ms | 0.057 ms |
-| **Config B: ML-Only** | 0.9581 | 0.9643 | 0.9818 | 0.9730 | **0.1200** | 0.0182 | 1.528 ms | 1.390 ms | 2.411 ms |
-| **Config C: Ensemble** | 0.9535 | 0.9586 | 0.9818 | 0.9701 | **0.1400** | 0.0182 | 1.196 ms | 1.312 ms | 2.368 ms |
-| **Config D: Gateway Policy** | **0.8000** | **0.9919** | **0.7455** | **0.8512** | **0.0200** | **0.2545** | 1.457 ms | 1.447 ms | 2.537 ms |
+| **Config A: Rule-Only** | 0.4558 | 0.9800 | 0.2970 | 0.4558 | 0.0200 | 0.7030 | 0.033 ms | 0.029 ms | 0.064 ms |
+| **Config B: ML-Only** | 0.9581 | 0.9643 | 0.9818 | 0.9730 | **0.1200** | 0.0182 | 1.880 ms | 1.790 ms | 2.662 ms |
+| **Config C: Ensemble** | 0.9535 | 0.9586 | 0.9818 | 0.9701 | **0.1400** | 0.0182 | 1.457 ms | 1.695 ms | 2.494 ms |
+| **Config D: Gateway Policy** | **0.8047** | **0.9920** | **0.7515** | **0.8552** | **0.0200** | **0.2485** | 1.819 ms | 1.895 ms | 2.737 ms |
 
 ### 3.2 Experiment 2 Confusion Matrices ($N = 215$)
 
@@ -98,7 +102,7 @@ The OOD partition isolates 11 semantic groups containing unseen templates, parap
 - **Configuration C (Rule + ML Ensemble):**
   $$\begin{bmatrix} \text{TN}=43 & \text{FP}=7 \\ \text{FN}=3 & \text{TP}=162 \end{bmatrix}$$
 - **Configuration D (Full Gateway Policy):**
-  $$\begin{bmatrix} \text{TN}=49 & \text{FP}=1 \\ \text{FN}=42 & \text{TP}=123 \end{bmatrix}$$
+  $$\begin{bmatrix} \text{TN}=49 & \text{FP}=1 \\ \text{FN}=41 & \text{TP}=124 \end{bmatrix}$$
 
 ---
 
@@ -132,19 +136,21 @@ Evaluated across tool abuse attempts in the test splits:
 | Metric | Day 8 Baseline (Exp 1) | Day 8.5 Hardened (Exp 1) | Day 8 Baseline (Exp 2) | Day 8.5 Hardened (Exp 2) | Security Function |
 |---|---|---|---|---|---|
 | **Total Tool Abuse Requests** | 10 | 10 | 20 | 20 | Proposed malicious tool actions |
-| **Auth-Layer `DENY` Decisions** | 7 | **9** | 17 | **19** | Denied by `ToolAuthorizer` RBAC and Path rules |
+| **Auth-Layer `DENY` Decisions** | 7 | **9** | 17 | **20** | Denied by `ToolAuthorizer` RBAC, Path, and Pydantic rules |
 | **Auth-Layer `REQUIRE_APPROVAL`** | 1 | **1** | 0 | **0** | Escalated for administrative human approval |
-| **Auth-Layer Blocking Rate** | 80.00% | **100.00%** | 85.00% | **95.00%** | Stopped before reaching execution logic |
-| **Allowed by Authorizer (Traversal)** | 2 | **0** | 3 | **0** | Directory traversals blocked at authorizer layer |
-| **Sandbox Executor Interceptions** | 2 | **0** | 2 | **0** | Unnecessary because authorizer caught all traversals |
-| **End-to-End System Blocking Rate**| 100.00% | **100.00%** | 95.00% | **95.00%** | Total multi-layer system containment |
+| **Auth-Layer Blocking Rate** | 80.00% | **100.00%** | 85.00% | **100.00%** | Stopped before reaching execution logic |
+| **Allowed by Authorizer (Traversal / Type error)** | 2 | **0** | 3 | **0** | Directory traversals & invalid types blocked at authorizer |
+| **Sandbox Executor Interceptions** | 2 | **0** | 2 | **0** | Unnecessary because authorizer caught all attacks |
+| **End-to-End System Blocking Rate**| 100.00% | **100.00%** | 95.00% | **100.00%** | Total multi-layer system containment on evaluated tool cases |
 | **Approval Bypass Rate** | 0.00% | **0.00%** | 0.00% | **0.00%** | Client-spoofed claims (`approved: true`) ignored |
 
 > [!IMPORTANT]
-> **Two-Layer Defense-in-Depth:**
-> Path traversal attacks (`../app.env`, `../../../../etc/passwd`, `%2e%2e%2f`, `..\windows`) are now intercepted directly by `ToolAuthorizer` in Step 5b, achieving a **100.00% authorization-layer blocking rate** on Experiment 1.
+> **Two-Layer Defense-in-Depth & Explicit Scope Boundary:**
+> Path traversal attacks (`../app.env`, `../../../../etc/passwd`, `%2e%2e%2f`, `..\windows`), null bytes, and invalid argument types (`filepath: 1234`) are now intercepted directly by `ToolAuthorizer` in Step 5, achieving a **100.00% authorization-layer blocking rate** on both Experiment 1 (10/10) and Experiment 2 (20/20).
 > 
 > Furthermore, `ToolExecutor._run_simulated_tool` maintains independent execution sandbox validation. If an authorizer were mocked or bypassed, the execution sandbox independently rejects directory traversal, ensuring defense-in-depth across the entire gateway lifecycle.
+> 
+> *Scope Boundary Clarification:* The 100.00% result applies specifically to the evaluated tool governance test cases (10/10 in Exp 1, 20/20 in Exp 2) and sensitive credential redaction (29/29 in Exp 1, 70/70 in Exp 2). The complete gateway policy (Config D) operates at an overall prompt classification recall of **84.13%** on Experiment 1 and **75.15%** on Experiment 2 OOD, reflecting its defense-in-depth design that prevents alert fatigue while maintaining 100% containment on explicit tool governance and credential leakage test cases.
 
 ---
 
