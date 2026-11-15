@@ -1,14 +1,20 @@
 from enum import Enum
+import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, HTTPException, Query, Request
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.app.monitoring.event_store import EventStore
+from backend.app.policies.analysis_context import AnalysisContextStore
 from backend.app.policies.approval_manager import ApprovalManager
 from backend.app.policies.risk_engine import RiskEngine
 from backend.app.policies.tool_authorizer import ToolAuthorizer
 from backend.app.policies.tool_executor import ToolExecutor
+from backend.app.policies.tool_registry import ToolRegistry
 from backend.app.privacy.pii_detector import redact_sensitive_data
 from backend.app.rag.context_analyzer import ContextAnalyzer
 from backend.app.rag.context_policy import ContextPolicy
@@ -25,8 +31,18 @@ class DecisionEnum(str, Enum):
     BLOCK = "BLOCK"
 
 
+# ---------------------------------------------------------------------------
+# Request & Response Pydantic Schemas
+# ---------------------------------------------------------------------------
+
+
 class AnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     prompt: str = Field(..., description="Prompt text to inspect and analyze")
+    requester_id: Optional[str] = Field(
+        default="dev-user",
+        description="Development-only requester identity binding",
+    )
 
     @field_validator("prompt")
     @classmethod
@@ -67,6 +83,7 @@ class AnalysisDetails(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
+    analysis_id: str = Field(..., description="Server-controlled analysis context ID")
     decision: DecisionEnum
     risk_score: int = Field(..., ge=0, le=100)
     risk_level: str
@@ -106,7 +123,15 @@ class ToolAuthorizeRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict, description="Arguments for tool invocation")
     requester_id: str = Field(..., min_length=1, description="Identifier of the requester")
     requester_role: str = Field(default="USER", description="Development-only requester role claim")
-    risk_score: int = Field(default=0, ge=0, le=100, description="Upstream PromptShield risk score")
+    analysis_id: str = Field(
+        ...,
+        min_length=1,
+        description="Required server-controlled analysis context UUID from /api/v1/analyze",
+    )
+    risk_score: Optional[int] = Field(
+        default=None,
+        description="Client-supplied risk score (untrusted/ignored; server context is authoritative)",
+    )
     context_trust_level: str = Field(default="UNTRUSTED", description="Context trust boundary level")
     approval_id: Optional[str] = Field(default=None, description="Existing human approval token if acquired")
     is_admin: Optional[bool] = Field(default=None, description="Client-supplied admin flag (untrusted/ignored)")
@@ -129,7 +154,15 @@ class ToolExecuteRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict, description="Arguments for tool invocation")
     requester_id: str = Field(..., min_length=1, description="Identifier of the requester")
     requester_role: str = Field(default="USER", description="Development-only requester role claim")
-    risk_score: int = Field(default=0, ge=0, le=100, description="Upstream PromptShield risk score")
+    analysis_id: str = Field(
+        ...,
+        min_length=1,
+        description="Required server-controlled analysis context UUID from /api/v1/analyze",
+    )
+    risk_score: Optional[int] = Field(
+        default=None,
+        description="Client-supplied risk score (untrusted/ignored; server context is authoritative)",
+    )
     context_trust_level: str = Field(default="UNTRUSTED", description="Context trust boundary level")
     approval_id: Optional[str] = Field(default=None, description="Approved human approval token")
 
@@ -168,7 +201,9 @@ class ApprovalDecisionResponse(BaseModel):
     decision_reason: Optional[str] = None
 
 
-# --- System Routes ---
+# ---------------------------------------------------------------------------
+# System & Health Routes
+# ---------------------------------------------------------------------------
 
 
 @router.get("/", tags=["System"])
@@ -179,22 +214,33 @@ async def root():
         "description": "Adaptive Runtime Security Gateway for LLM Applications",
         "version": "0.1.0",
         "status": "running",
+        "prototype_notice": "Research prototype; in-memory state and development identities only",
     }
 
 
 @router.get("/health", tags=["System"])
 async def health(request: Request):
-    """Health check endpoint reflecting service and ML model status."""
+    """
+    Health check endpoint reflecting service, ML classifier, and in-memory storage status.
+    """
     classifier = getattr(request.app.state, "classifier", None)
     is_trained = classifier is not None and getattr(classifier, "is_trained", False)
+
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    event_count = len(event_store._events) if event_store else 0
 
     return {
         "status": "healthy" if is_trained else "degraded",
         "classifier_status": "ready" if is_trained else "unavailable",
+        "environment": "development_prototype",
+        "in_memory_storage": True,
+        "recent_event_count": event_count,
     }
 
 
-# --- Prompt Security Routes ---
+# ---------------------------------------------------------------------------
+# Prompt Security Routes
+# ---------------------------------------------------------------------------
 
 
 @router.post("/api/v1/analyze", response_model=AnalyzeResponse, tags=["Security"])
@@ -202,27 +248,70 @@ async def analyze_prompt(payload: AnalyzeRequest, request: Request):
     """
     Analyze an incoming prompt for prompt injection, privacy violations, and malicious intent.
     Enforces security policies to ALLOW, SANITIZE, or BLOCK the request.
+    Generates and stores a server-controlled AnalysisContext with a unique analysis_id.
     """
     risk_engine: Optional[RiskEngine] = getattr(request.app.state, "risk_engine", None)
     if risk_engine is None:
         classifier = getattr(request.app.state, "classifier", None)
         risk_engine = RiskEngine(classifier=classifier)
 
+    analysis_store: Optional[AnalysisContextStore] = getattr(request.app.state, "analysis_context_store", None)
+    if analysis_store is None:
+        analysis_store = AnalysisContextStore()
+        request.app.state.analysis_context_store = analysis_store
+
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
+
     assessment = risk_engine.evaluate(payload.prompt)
+
+    # 1. Store authoritative server-controlled analysis context
+    decision_str = str(getattr(assessment.decision, "value", assessment.decision))
+    ctx = analysis_store.create_context(
+        risk_score=assessment.risk_score,
+        decision=decision_str,
+        requester_id=payload.requester_id,
+        context_trust_level="UNTRUSTED",
+    )
+
+    # 2. Record sanitized security event (NEVER raw prompt or secrets)
+    rule_ids = [rf.get("rule_id", "") for rf in getattr(assessment, "rule_findings", [])]
+    sensitive_count = len(getattr(assessment, "sensitive_findings", []))
+    event_store.record_event(
+        category="PROMPT_ANALYSIS",
+        event_type="PROMPT_EVALUATED",
+        decision=decision_str,
+        risk_score=assessment.risk_score,
+        requester_id=payload.requester_id,
+        metadata={
+            "analysis_id": ctx.analysis_id,
+            "risk_level": assessment.risk_level,
+            "rule_findings_count": len(rule_ids),
+            "triggered_rules": rule_ids,
+            "sensitive_findings_count": sensitive_count,
+        },
+    )
 
     # Security logging: NEVER log unredacted prompts containing sensitive data or secrets
     safe_log_prompt = redact_sensitive_data(payload.prompt)
     logger.info(
-        "Prompt analyzed: decision=%s, risk_score=%d, prompt_preview=%r",
+        "Prompt analyzed: analysis_id=%s, decision=%s, risk_score=%d, prompt_preview=%r",
+        ctx.analysis_id,
         assessment.decision,
         assessment.risk_score,
         safe_log_prompt[:60] + "..." if len(safe_log_prompt) > 60 else safe_log_prompt,
     )
 
-    return assessment.to_dict()
+    res_dict = assessment.to_dict()
+    res_dict["analysis_id"] = ctx.analysis_id
+    return res_dict
 
 
-# --- RAG Security Routes ---
+# ---------------------------------------------------------------------------
+# RAG Security Routes
+# ---------------------------------------------------------------------------
 
 
 @router.post("/api/v1/scan-document", response_model=ScanDocumentResponse, tags=["RAG Security"])
@@ -234,6 +323,7 @@ async def scan_document_endpoint(payload: ScanDocumentRequest, request: Request)
     document_scanner: Optional[DocumentScanner] = getattr(request.app.state, "document_scanner", None)
     context_policy: Optional[ContextPolicy] = getattr(request.app.state, "context_policy", None)
     context_analyzer: Optional[ContextAnalyzer] = getattr(request.app.state, "context_analyzer", None)
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
 
     if document_scanner is None:
         classifier = getattr(request.app.state, "classifier", None)
@@ -242,6 +332,9 @@ async def scan_document_endpoint(payload: ScanDocumentRequest, request: Request)
         context_policy = ContextPolicy()
     if context_analyzer is None:
         context_analyzer = ContextAnalyzer()
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
 
     # Validate and normalize source boundary
     try:
@@ -265,6 +358,21 @@ async def scan_document_endpoint(payload: ScanDocumentRequest, request: Request)
         context=context,
     )
 
+    # Record sanitized event
+    sensitive_count = len(assessment.findings.get("sensitive_data", []))
+    event_store.record_event(
+        category="DOCUMENT_SCAN",
+        event_type="DOCUMENT_SCANNED",
+        decision=assessment.decision.value,
+        risk_score=assessment.risk_score,
+        metadata={
+            "document_id": payload.document_id,
+            "trust_level": assessment.trust_level.value,
+            "source": payload.source,
+            "sensitive_findings_count": sensitive_count,
+        },
+    )
+
     # Security logging: NEVER log unredacted document content or secrets
     logger.info(
         "Document scanned: doc_id=%s, decision=%s, risk_score=%d, trust_level=%s",
@@ -277,51 +385,104 @@ async def scan_document_endpoint(payload: ScanDocumentRequest, request: Request)
     return assessment.to_dict()
 
 
-# --- Policy & Secure Tool Authorization Routes ---
+# ---------------------------------------------------------------------------
+# Policy & Secure Tool Authorization Routes
+# ---------------------------------------------------------------------------
 
 
 @router.post("/api/v1/tools/authorize", response_model=ToolAuthorizeResponse, tags=["Tool Authorization"])
 async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Request):
     """
-    Independently authorize proposed tool actions against RBAC, risk score, and human approval constraints.
-    Prevents autonomous LLM tool execution by enforcing backend policy.
+    Independently authorize proposed tool actions against RBAC, server-controlled risk score,
+    and human approval constraints. Requires a valid server-generated analysis_id.
     """
     authorizer: Optional[ToolAuthorizer] = getattr(request.app.state, "tool_authorizer", None)
     if authorizer is None:
         authorizer = ToolAuthorizer()
 
-    # Detect client spoofing attempts
-    client_admin = payload.is_admin is True
-    client_approved = payload.approved is True
+    analysis_store: Optional[AnalysisContextStore] = getattr(request.app.state, "analysis_context_store", None)
+    if analysis_store is None:
+        analysis_store = AnalysisContextStore()
+        request.app.state.analysis_context_store = analysis_store
 
-    # Security Invariant: External clients cannot unilaterally declare TRUSTED context
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
+
+    # 1. Strictly validate analysis_id (no zero-risk fallbacks)
+    ctx, err_msg, status_code = analysis_store.validate_and_get_context(
+        analysis_id=payload.analysis_id,
+        requester_id=payload.requester_id,
+    )
+    if not ctx:
+        raise HTTPException(status_code=status_code, detail=err_msg)
+
+    # 2. Server-controlled risk score is authoritative
+    server_risk_score = ctx.risk_score
+    if payload.risk_score is not None and payload.risk_score != server_risk_score:
+        logger.warning(
+            "Client attempted to manipulate risk_score (client=%d, server=%d) for requester '%s'. Ignoring client claim.",
+            payload.risk_score,
+            server_risk_score,
+            payload.requester_id,
+        )
+
+    # 3. Security Invariant: External clients cannot unilaterally declare TRUSTED context
     context_trust = payload.context_trust_level
-    if context_trust.strip().upper() == "TRUSTED":
+    if context_trust.strip().upper() in ("TRUSTED", "SYSTEM_TRUSTED"):
         logger.warning(
             "Client attempted to assert TRUSTED context on external API for requester '%s'. Overriding to UNTRUSTED.",
             payload.requester_id,
         )
         context_trust = "UNTRUSTED"
 
+    # Detect client spoofing attempts
+    client_admin = payload.is_admin is True
+    client_approved = payload.approved is True
+
     result = authorizer.authorize(
         tool_name=payload.tool_name,
         arguments=payload.arguments,
         requester_id=payload.requester_id,
         requester_role=payload.requester_role,
-        risk_score=payload.risk_score,
+        risk_score=server_risk_score,
         context_trust_level=context_trust,
         approval_id=payload.approval_id,
         client_supplied_admin=client_admin,
         client_supplied_approved=client_approved,
     )
 
+    # Record sanitized event
+    event_type = (
+        "TOOL_AUTHORIZED"
+        if result.decision.value == "ALLOW"
+        else ("TOOL_APPROVAL_REQUIRED" if result.decision.value == "REQUIRE_APPROVAL" else "TOOL_DENIED")
+    )
+    event_store.record_event(
+        category="TOOL_AUTHORIZATION",
+        event_type=event_type,
+        decision=result.decision.value,
+        risk_score=server_risk_score,
+        requester_id=payload.requester_id,
+        metadata={
+            "tool_name": payload.tool_name,
+            "requester_role": payload.requester_role,
+            "risk_level": result.risk_level,
+            "requires_approval": result.requires_approval,
+            "approval_id": result.approval_id,
+            "analysis_id": ctx.analysis_id,
+        },
+    )
+
     logger.info(
-        "Tool authorization: tool=%s, requester=%s, role=%s, decision=%s, risk=%s",
+        "Tool authorization: tool=%s, requester=%s, role=%s, decision=%s, risk=%s, analysis_id=%s",
         payload.tool_name,
         payload.requester_id,
         payload.requester_role,
         result.decision.value,
         result.risk_level,
+        ctx.analysis_id,
     )
 
     return result.to_dict()
@@ -331,15 +492,36 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
 async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
     """
     Securely execute an authorized tool in a controlled sandbox.
-    Requires independent authorization before execution and consumes any approval token.
+    Requires independent authorization against the server-controlled analysis context.
     """
     executor: Optional[ToolExecutor] = getattr(request.app.state, "tool_executor", None)
     if executor is None:
         executor = ToolExecutor()
 
-    # Security Invariant: External clients cannot unilaterally declare TRUSTED context
+    analysis_store: Optional[AnalysisContextStore] = getattr(request.app.state, "analysis_context_store", None)
+    if analysis_store is None:
+        analysis_store = AnalysisContextStore()
+        request.app.state.analysis_context_store = analysis_store
+
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
+
+    # 1. Strictly validate analysis context (no zero-risk fallbacks)
+    ctx, err_msg, status_code = analysis_store.validate_and_get_context(
+        analysis_id=payload.analysis_id,
+        requester_id=payload.requester_id,
+    )
+    if not ctx:
+        raise HTTPException(status_code=status_code, detail=err_msg)
+
+    # 2. Server-controlled risk score is authoritative
+    server_risk_score = ctx.risk_score
+
+    # 3. Security Invariant: External clients cannot unilaterally declare TRUSTED context
     context_trust = payload.context_trust_level
-    if context_trust.strip().upper() == "TRUSTED":
+    if context_trust.strip().upper() in ("TRUSTED", "SYSTEM_TRUSTED"):
         logger.warning(
             "Client attempted to assert TRUSTED context on external API for requester '%s'. Overriding to UNTRUSTED.",
             payload.requester_id,
@@ -352,14 +534,44 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
             arguments=payload.arguments,
             requester_id=payload.requester_id,
             requester_role=payload.requester_role,
-            risk_score=payload.risk_score,
+            risk_score=server_risk_score,
             context_trust_level=context_trust,
             approval_id=payload.approval_id,
         )
+
+        event_store.record_event(
+            category="TOOL_EXECUTION",
+            event_type="TOOL_EXECUTED",
+            decision=exec_result.status,
+            risk_score=server_risk_score,
+            requester_id=payload.requester_id,
+            metadata={
+                "tool_name": payload.tool_name,
+                "execution_id": exec_result.execution_id,
+                "approval_id": payload.approval_id,
+                "analysis_id": ctx.analysis_id,
+            },
+        )
         return exec_result.to_dict()
     except PermissionError as exc:
+        event_store.record_event(
+            category="TOOL_EXECUTION",
+            event_type="TOOL_EXECUTION_DENIED",
+            decision="FORBIDDEN",
+            risk_score=server_risk_score,
+            requester_id=payload.requester_id,
+            metadata={"tool_name": payload.tool_name, "analysis_id": ctx.analysis_id},
+        )
         raise HTTPException(status_code=403, detail=str(exc))
     except (KeyError, ValueError) as exc:
+        event_store.record_event(
+            category="TOOL_EXECUTION",
+            event_type="TOOL_EXECUTION_FAILED",
+            decision="FAILED",
+            risk_score=server_risk_score,
+            requester_id=payload.requester_id,
+            metadata={"tool_name": payload.tool_name, "analysis_id": ctx.analysis_id},
+        )
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -381,6 +593,11 @@ async def decide_approval_endpoint(
     if manager is None:
         manager = ApprovalManager()
 
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
+
     approver_role_norm = ToolAuthorizer._normalize_role(payload.approver_role)
     if not approver_role_norm:
         raise HTTPException(status_code=422, detail=f"Invalid approver role: '{payload.approver_role}'")
@@ -401,6 +618,18 @@ async def decide_approval_endpoint(
                 reason=payload.reason,
             )
 
+        event_store.record_event(
+            category="APPROVAL",
+            event_type="APPROVAL_DECIDED",
+            decision=req.status.value,
+            requester_id=payload.approver_id,
+            metadata={
+                "approval_id": approval_id,
+                "tool_name": req.tool_name,
+                "approver_role": payload.approver_role,
+            },
+        )
+
         return {
             "approval_id": req.approval_id,
             "status": req.status.value,
@@ -415,3 +644,184 @@ async def decide_approval_endpoint(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Monitoring & Analytics Routes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/v1/dashboard/overview", tags=["Dashboard"])
+async def dashboard_overview(request: Request):
+    """
+    Aggregated operational statistics and decision breakdowns for the security dashboard.
+    Returns actual session counts from in-memory event and approval stores.
+    """
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
+
+    approval_manager: Optional[ApprovalManager] = getattr(request.app.state, "approval_manager", None)
+    pending_count = approval_manager.count_pending() if approval_manager else 0
+
+    return event_store.get_overview_statistics(pending_approvals_count=pending_count)
+
+
+@router.get("/api/v1/dashboard/events", tags=["Dashboard"])
+async def list_dashboard_events(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500, description="Max events to return"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    category: Optional[str] = Query(default=None, description="Filter by event category"),
+    event_type: Optional[str] = Query(default=None, description="Filter by event type"),
+    decision: Optional[str] = Query(default=None, description="Filter by decision"),
+):
+    """
+    Paginated audit log of sanitized security gateway events.
+    Stored metadata excludes raw prompts, tool arguments, and sensitive data.
+    """
+    event_store: Optional[EventStore] = getattr(request.app.state, "event_store", None)
+    if event_store is None:
+        event_store = EventStore()
+        request.app.state.event_store = event_store
+
+    events, total = event_store.get_events(
+        limit=limit,
+        offset=offset,
+        category=category,
+        event_type=event_type,
+        decision=decision,
+    )
+
+    return {
+        "items": events,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "storage": "in_memory",
+        "session_only": True,
+    }
+
+
+@router.get("/api/v1/dashboard/approvals", tags=["Dashboard"])
+async def list_dashboard_approvals(
+    request: Request,
+    status: Optional[str] = Query(default=None, description="Filter by approval status (PENDING, APPROVED, etc.)"),
+    limit: int = Query(default=50, ge=1, le=200, description="Max requests to return"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+):
+    """
+    List human approval requests for the dashboard.
+    CRITICAL PRIVACY GUARANTEE: Never exposes stored tool arguments.
+    """
+    manager: Optional[ApprovalManager] = getattr(request.app.state, "approval_manager", None)
+    if manager is None:
+        return {"items": [], "total": 0, "limit": limit, "offset": offset}
+
+    items, total = manager.list_requests(status=status, limit=limit, offset=offset)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "storage": "in_memory",
+        "session_only": True,
+    }
+
+
+@router.get("/api/v1/tools/registry", tags=["Dashboard"])
+async def list_tools_registry(request: Request):
+    """
+    Return safe metadata for all registered tools, including risk tiers and argument schemas.
+    Does not expose sensitive system paths or execution code.
+    """
+    registry: Optional[ToolRegistry] = getattr(request.app.state, "tool_registry", None)
+    if registry is None:
+        registry = ToolRegistry()
+        request.app.state.tool_registry = registry
+
+    tools = [tool.to_dict() for tool in registry.list_tools()]
+    return {
+        "tools": tools,
+        "total": len(tools),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Benchmark Results API
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/v1/benchmarks", tags=["Dashboard"])
+async def get_benchmarks():
+    """
+    Retrieve empirical Day 8.5 hardened benchmark evaluation results.
+    Loads actual machine-readable artifacts from research/results/day8_5_hardened/.
+    Paths are resolved server-side relative to the project root.
+    """
+    project_root = Path(__file__).resolve().parents[3]
+    bench_dir = project_root / "research" / "results" / "day8_5_hardened"
+
+    if not bench_dir.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="Benchmark artifacts directory not found: research/results/day8_5_hardened",
+        )
+
+    results_file = bench_dir / "benchmark_results.json"
+    stratified_file = bench_dir / "benchmark_results_stratified.json"
+    grouped_file = bench_dir / "benchmark_results_grouped.json"
+    confusion_file = bench_dir / "confusion_matrices.json"
+    summary_csv_file = bench_dir / "metrics_summary.csv"
+
+    required_files = [results_file, stratified_file, grouped_file, confusion_file, summary_csv_file]
+    missing = [f.name for f in required_files if not f.exists()]
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Incomplete benchmark artifacts. Missing: {', '.join(missing)}",
+        )
+
+    try:
+        with open(results_file, "r", encoding="utf-8") as f:
+            bench_results = json.load(f)
+        with open(stratified_file, "r", encoding="utf-8") as f:
+            strat_results = json.load(f)
+        with open(grouped_file, "r", encoding="utf-8") as f:
+            group_results = json.load(f)
+        with open(confusion_file, "r", encoding="utf-8") as f:
+            confusion_matrices = json.load(f)
+
+        df_summary = pd.read_csv(summary_csv_file)
+        summary_rows = df_summary.to_dict(orient="records")
+    except Exception as exc:
+        logger.error("Failed to read benchmark artifacts: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to parse benchmark artifacts")
+
+    return {
+        "status": "success",
+        "source": "research/results/day8_5_hardened",
+        "metadata": bench_results.get("metadata", {}),
+        "metrics_summary_table": summary_rows,
+        "confusion_matrices": confusion_matrices,
+        "experiment_1_stratified": {
+            "name": "Experiment 1: In-Distribution Stratified Split",
+            "sample_count": strat_results.get("sample_count", 81),
+            "category_counts": strat_results.get("category_counts", {}),
+            "label_counts": strat_results.get("label_counts", {}),
+            "configurations": strat_results.get("configurations", {}),
+            "pii_secret_evaluation": strat_results.get("pii_secret_evaluation", {}),
+            "tool_policy_evaluation": strat_results.get("tool_policy_evaluation", {}),
+        },
+        "experiment_2_grouped_ood": {
+            "name": "Experiment 2: Out-of-Distribution Grouped Split",
+            "sample_count": group_results.get("sample_count", 215),
+            "category_counts": group_results.get("category_counts", {}),
+            "label_counts": group_results.get("label_counts", {}),
+            "configurations": group_results.get("configurations", {}),
+            "pii_secret_evaluation": group_results.get("pii_secret_evaluation", {}),
+            "tool_policy_evaluation": group_results.get("tool_policy_evaluation", {}),
+        },
+        "adversarial_scenarios_evaluation": bench_results.get("adversarial_scenarios_evaluation", {}),
+    }

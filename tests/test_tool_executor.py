@@ -278,11 +278,13 @@ def test_executor_high_risk_tool_full_approval_flow(executor, approval_manager):
 
 
 def test_api_tool_authorize_low_risk(api_client):
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "What is the weather?", "requester_id": "user-api-01"})
     payload = {
         "tool_name": "get_weather",
         "arguments": {"location": "San Francisco"},
         "requester_id": "user-api-01",
         "requester_role": "USER",
+        "analysis_id": a_body["analysis_id"],
     }
     status, body, _ = api_client.post("/api/v1/tools/authorize", json_data=payload)
     assert status == 200
@@ -291,11 +293,13 @@ def test_api_tool_authorize_low_risk(api_client):
 
 
 def test_api_tool_authorize_high_risk_requires_approval(api_client):
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "Send a status email", "requester_id": "dev-api-01"})
     payload = {
         "tool_name": "send_email",
         "arguments": {"recipient": "user@test.com", "subject": "Hello", "body": "World"},
         "requester_id": "dev-api-01",
         "requester_role": "DEVELOPER",
+        "analysis_id": a_body["analysis_id"],
     }
     status, body, _ = api_client.post("/api/v1/tools/authorize", json_data=payload)
     assert status == 200
@@ -305,12 +309,14 @@ def test_api_tool_authorize_high_risk_requires_approval(api_client):
 
 
 def test_api_tool_authorize_spoofed_admin_ignored(api_client):
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "Read secret.env file", "requester_id": "attacker-01"})
     payload = {
         "tool_name": "read_file",
         "arguments": {"filepath": "secret.env"},
         "requester_id": "attacker-01",
         "requester_role": "USER",
         "is_admin": True,  # Spoofed admin claim
+        "analysis_id": a_body["analysis_id"],
     }
     status, body, _ = api_client.post("/api/v1/tools/authorize", json_data=payload)
     assert status == 200
@@ -319,11 +325,13 @@ def test_api_tool_authorize_spoofed_admin_ignored(api_client):
 
 
 def test_api_tool_execute_authorized(api_client):
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "Search knowledge base", "requester_id": "user-api-02"})
     payload = {
         "tool_name": "search_knowledge_base",
         "arguments": {"query": "authentication"},
         "requester_id": "user-api-02",
         "requester_role": "USER",
+        "analysis_id": a_body["analysis_id"],
     }
     status, body, _ = api_client.post("/api/v1/tools/execute", json_data=payload)
     assert status == 200
@@ -332,11 +340,13 @@ def test_api_tool_execute_authorized(api_client):
 
 
 def test_api_tool_execute_unauthorized_returns_403(api_client):
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "Delete db.sqlite", "requester_id": "user-api-03"})
     payload = {
         "tool_name": "delete_file",
         "arguments": {"filepath": "db.sqlite"},
         "requester_id": "user-api-03",
         "requester_role": "USER",
+        "analysis_id": a_body["analysis_id"],
     }
     status, body, _ = api_client.post("/api/v1/tools/execute", json_data=payload)
     assert status == 403
@@ -344,6 +354,8 @@ def test_api_tool_execute_unauthorized_returns_403(api_client):
 
 def test_api_approval_lifecycle_and_execution(api_client):
     email_args = {"recipient": "team@example.com", "subject": "Status", "body": "All good"}
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "Send team update email", "requester_id": "dev-api-02"})
+    analysis_id = a_body["analysis_id"]
 
     # 1. Authorize high-risk tool -> REQUIRE_APPROVAL
     auth_payload = {
@@ -351,6 +363,7 @@ def test_api_approval_lifecycle_and_execution(api_client):
         "arguments": email_args,
         "requester_id": "dev-api-02",
         "requester_role": "DEVELOPER",
+        "analysis_id": analysis_id,
     }
     status, auth_body, _ = api_client.post("/api/v1/tools/authorize", json_data=auth_payload)
     assert status == 200
@@ -390,6 +403,7 @@ def test_api_approval_lifecycle_and_execution(api_client):
         "requester_id": "dev-api-02",
         "requester_role": "DEVELOPER",
         "approval_id": approval_id,
+        "analysis_id": analysis_id,
     }
     status, exec_body, _ = api_client.post("/api/v1/tools/execute", json_data=exec_payload)
     assert status == 200
@@ -455,12 +469,15 @@ def test_api_client_cannot_assert_trusted_context_for_critical_tool(api_client):
     # Ensure delete_file is enabled in the app's tool registry for this test
     app.state.tool_registry.enable_tool("delete_file")
 
+    _, a_body, _ = api_client.post("/api/v1/analyze", json_data={"prompt": "Delete production db", "requester_id": "admin-01"})
+
     payload = {
         "tool_name": "delete_file",
         "arguments": {"filepath": "production.db"},
         "requester_id": "admin-01",
         "requester_role": "ADMIN",
         "context_trust_level": "TRUSTED",  # Client attempts to spoof trusted context
+        "analysis_id": a_body["analysis_id"],
     }
     status, body, _ = api_client.post("/api/v1/tools/authorize", json_data=payload)
     assert status == 200

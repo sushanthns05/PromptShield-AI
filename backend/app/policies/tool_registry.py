@@ -89,13 +89,20 @@ class ToolDefinition:
     is_enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
+        schema_dict = None
+        if self.argument_schema:
+            try:
+                schema_dict = self.argument_schema.model_json_schema()
+            except Exception:
+                schema_dict = {"name": self.argument_schema.__name__}
         return {
             "name": self.name,
             "description": self.description,
             "allowed_roles": [r.value for r in self.allowed_roles],
             "risk_level": self.risk_level.value,
             "required_args": self.required_args,
-            "argument_schema": self.argument_schema.__name__ if self.argument_schema else None,
+            "argument_schema": schema_dict or (self.argument_schema.__name__ if self.argument_schema else None),
+            "schema_name": self.argument_schema.__name__ if self.argument_schema else None,
             "requires_approval": self.requires_approval,
             "is_enabled": self.is_enabled,
         }

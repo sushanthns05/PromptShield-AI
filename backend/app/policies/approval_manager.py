@@ -50,9 +50,9 @@ class ApprovalRequest:
             "approval_id": self.approval_id,
             "tool_name": self.tool_name,
             "requester_id": self.requester_id,
-            "requester_role": self.requester_role.value,
-            "risk_level": self.risk_level.value,
-            "status": self.status.value,
+            "requester_role": getattr(self.requester_role, "value", str(self.requester_role)),
+            "risk_level": getattr(self.risk_level, "value", str(self.risk_level)),
+            "status": getattr(self.status, "value", str(self.status)),
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
             "decided_by": self.decided_by,
@@ -237,3 +237,55 @@ class ApprovalManager:
             req.consumed_at = datetime.now(timezone.utc)
             logger.info("Approval token '%s' successfully consumed for tool '%s'", approval_id, tool_name)
             return True
+
+    def list_requests(
+        self,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """
+        Thread-safe paginated list of approval requests for administrative dashboard monitoring.
+
+        CRITICAL PRIVACY GUARANTEE:
+        Stored tool arguments and sensitive payloads are NEVER exposed in the returned metadata.
+        """
+        status_filter: Optional[ApprovalStatus] = None
+        if status:
+            try:
+                status_filter = ApprovalStatus(status.strip().upper())
+            except ValueError:
+                return [], 0
+
+        with self._lock:
+            # Refresh expired statuses
+            now = datetime.now(timezone.utc)
+            for req in self._approvals.values():
+                if req.status == ApprovalStatus.PENDING and req.expires_at < now:
+                    req.status = ApprovalStatus.EXPIRED
+
+            # Filter and sort in reverse chronological order (newest first)
+            filtered = list(self._approvals.values())
+            if status_filter:
+                filtered = [r for r in filtered if r.status == status_filter]
+
+            filtered.sort(key=lambda r: r.created_at, reverse=True)
+            total = len(filtered)
+            paginated = filtered[offset : offset + limit]
+
+            # to_dict() explicitly omits the arguments field
+            return [r.to_dict() for r in paginated], total
+
+    def count_pending(self) -> int:
+        """Return the count of active, unexpired pending approvals."""
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            count = 0
+            for req in self._approvals.values():
+                if req.status == ApprovalStatus.PENDING:
+                    if req.expires_at < now:
+                        req.status = ApprovalStatus.EXPIRED
+                    else:
+                        count += 1
+            return count
+

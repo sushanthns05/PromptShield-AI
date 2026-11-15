@@ -5,10 +5,13 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from backend.app.api.routes import router
 from backend.app.ml.classifier import PromptClassifier
+from backend.app.monitoring.event_store import EventStore
+from backend.app.policies.analysis_context import AnalysisContextStore
 from backend.app.policies.approval_manager import ApprovalManager
 from backend.app.policies.risk_engine import RiskEngine
 from backend.app.policies.tool_authorizer import ToolAuthorizer
@@ -95,6 +98,10 @@ async def lifespan(app: FastAPI):
     app.state.tool_authorizer = tool_authorizer
     app.state.tool_executor = tool_executor
 
+    # Session-scoped analysis context store and audit event store
+    app.state.analysis_context_store = AnalysisContextStore()
+    app.state.event_store = EventStore()
+
     yield
 
     logger.info("Shutting down PromptShield AI Security Gateway...")
@@ -102,9 +109,34 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PromptShield AI",
-    description="Adaptive Runtime Security Gateway for LLM Applications",
+    description="Adaptive Runtime Security Gateway for LLM Applications (Research Prototype)",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# Configure development CORS for frontend dashboard (e.g. Vite on port 5173)
+env_origins = os.getenv("PROMPTSHIELD_ALLOWED_ORIGINS", "")
+if env_origins.strip():
+    allowed_origins = [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+else:
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+# Security Invariant: Never allow wildcard '*' origin when allow_credentials=True
+if "*" in allowed_origins:
+    logger.warning("Wildcard CORS origin '*' detected. Removing to prevent insecure credential exposure.")
+    allowed_origins = [o for o in allowed_origins if o != "*"]
+    if not allowed_origins:
+        allowed_origins = ["http://localhost:5173"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 # Register routes
