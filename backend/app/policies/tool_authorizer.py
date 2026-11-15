@@ -142,6 +142,38 @@ class ToolAuthorizer:
                 return r
         return None
 
+    def evaluate_authorization(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        requester_id: str,
+        requester_role: Union[UserRole, str],
+        risk_score: int = 0,
+        context_trust_level: Union[TrustLevel, str] = TrustLevel.UNTRUSTED,
+        approval_id: Optional[str] = None,
+        client_supplied_admin: bool = False,
+        client_supplied_approved: bool = False,
+        analysis_decision: Optional[str] = None,
+    ) -> AuthorizationResult:
+        """
+        Side-effect-free evaluation of tool authorization policies.
+        Evaluates tool existence, schema, traversal, risk policy, RBAC,
+        trust boundary, and approval state WITHOUT creating pending approval requests.
+        """
+        return self.authorize(
+            tool_name=tool_name,
+            arguments=arguments,
+            requester_id=requester_id,
+            requester_role=requester_role,
+            risk_score=risk_score,
+            context_trust_level=context_trust_level,
+            approval_id=approval_id,
+            client_supplied_admin=client_supplied_admin,
+            client_supplied_approved=client_supplied_approved,
+            analysis_decision=analysis_decision,
+            create_approval=False,
+        )
+
     def authorize(
         self,
         tool_name: str,
@@ -154,6 +186,7 @@ class ToolAuthorizer:
         client_supplied_admin: bool = False,
         client_supplied_approved: bool = False,
         analysis_decision: Optional[str] = None,
+        create_approval: bool = True,
     ) -> AuthorizationResult:
         reasons: list[str] = []
 
@@ -420,14 +453,19 @@ class ToolAuthorizer:
                     reasons=reasons,
                 )
             else:
-                # No approval ID provided: Generate pending approval request
-                appr_req = self.approval_manager.create_request(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    requester_id=requester_id,
-                    requester_role=role,
-                    risk_level=tool.risk_level.value,
-                )
+                # No approval ID provided
+                if create_approval:
+                    appr_req = self.approval_manager.create_request(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        requester_id=requester_id,
+                        requester_role=role,
+                        risk_level=tool.risk_level.value,
+                    )
+                    gen_approval_id = appr_req.approval_id
+                else:
+                    gen_approval_id = None
+
                 reasons.append(f"Tool '{tool_name}' requires human approval before execution")
                 return AuthorizationResult(
                     decision=AuthDecision.REQUIRE_APPROVAL,
@@ -435,7 +473,7 @@ class ToolAuthorizer:
                     requester_id=requester_id,
                     requester_role=role.value,
                     risk_level=tool.risk_level.value,
-                    approval_id=appr_req.approval_id,
+                    approval_id=gen_approval_id,
                     requires_approval=True,
                     reasons=reasons,
                 )

@@ -21,10 +21,10 @@ from uuid import uuid4
 logger = logging.getLogger("promptshield.analysis_context")
 
 
-@dataclass
+@dataclass(frozen=True)
 class ToolIntentBinding:
     """
-    Atomic server-side binding between an analysis context and a proposed tool action.
+    Immutable atomic server-side binding between an analysis context and a proposed tool action.
     Prevents analysis context reuse for unrelated tool invocations or tampered arguments.
     """
 
@@ -32,40 +32,144 @@ class ToolIntentBinding:
     canonical_arguments_json: str
     intent_hash: str
     bound_at: datetime
+    approval_id: Optional[str] = None
+
+    def with_approval_id(self, approval_id: str) -> "ToolIntentBinding":
+        """Return a new immutable binding associated with an approval ID."""
+        return ToolIntentBinding(
+            tool_name=self.tool_name,
+            canonical_arguments_json=self.canonical_arguments_json,
+            intent_hash=self.intent_hash,
+            bound_at=self.bound_at,
+            approval_id=approval_id,
+        )
 
 
-@dataclass
+def canonicalize_tool_intent(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str, str]:
+    """
+    Deterministically canonicalize tool name and arguments.
+    Enforces allow_nan=False, sort_keys=True, separators=(',', ':'), ensure_ascii=True.
+    Rejects NaN, Infinity, non-JSON types, and malformed inputs.
+    Returns (normalized_tool_name, canonical_arguments_json, sha256_hash).
+    """
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool_name must be a non-empty string")
+
+    norm_tool = tool_name.strip().lower()
+
+    if not isinstance(arguments, dict):
+        raise ValueError("arguments must be a dictionary")
+
+    try:
+        canonical_args = json.dumps(
+            arguments,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Non-canonical or invalid argument structure: {exc}") from exc
+
+    intent_payload = f"{norm_tool}:{canonical_args}"
+    intent_hash = hashlib.sha256(intent_payload.encode("utf-8")).hexdigest()
+    return norm_tool, canonical_args, intent_hash
+
+
 class AnalysisContext:
     """
     Server-controlled analysis context record.
     Stores authoritative risk scores and policy decisions calculated by PromptShield AI.
+    Protected against accidental in-memory field mutation.
     """
 
-    analysis_id: str
-    risk_score: int
-    decision: str
-    requester_id: Optional[str]
-    context_trust_level: str
-    created_at: datetime
-    expires_at: datetime
-    bound_intent: Optional[ToolIntentBinding] = None
+    def __init__(
+        self,
+        analysis_id: str,
+        risk_score: int,
+        decision: str,
+        requester_id: Optional[str],
+        context_trust_level: str,
+        created_at: datetime,
+        expires_at: datetime,
+        bound_intent: Optional[ToolIntentBinding] = None,
+    ):
+        self._analysis_id = str(analysis_id)
+        self._risk_score = int(risk_score)
+        self._decision = str(decision).strip().upper()
+        self._requester_id = str(requester_id).strip() if requester_id else None
+        self._context_trust_level = str(context_trust_level).strip().upper()
+        self._created_at = created_at
+        self._expires_at = expires_at
+        self._bound_intent = bound_intent
+
+    @property
+    def analysis_id(self) -> str:
+        return self._analysis_id
+
+    @property
+    def risk_score(self) -> int:
+        return self._risk_score
+
+    @property
+    def decision(self) -> str:
+        return self._decision
+
+    @property
+    def requester_id(self) -> Optional[str]:
+        return self._requester_id
+
+    @property
+    def context_trust_level(self) -> str:
+        return self._context_trust_level
+
+    @property
+    def created_at(self) -> datetime:
+        return self._created_at
+
+    @property
+    def expires_at(self) -> datetime:
+        return self._expires_at
+
+    @property
+    def bound_intent(self) -> Optional[ToolIntentBinding]:
+        return self._bound_intent
 
     @property
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(timezone.utc) > self._expires_at
+
+    def bind_requester(self, requester_id: str) -> None:
+        """Controlled binding of requester on first use."""
+        if self._requester_id is not None:
+            raise ValueError(f"Requester already bound to '{self._requester_id}'")
+        self._requester_id = str(requester_id).strip()
+
+    def set_bound_intent(self, intent: ToolIntentBinding) -> None:
+        """Controlled binding of tool intent."""
+        if self._bound_intent is not None:
+            raise ValueError("Tool intent is already bound and cannot be overwritten")
+        self._bound_intent = intent
+
+    def set_intent_approval_id(self, approval_id: str) -> None:
+        """Associate an approval_id with the bound intent."""
+        if self._bound_intent is None:
+            raise ValueError("Cannot set approval_id on unbound context")
+        self._bound_intent = self._bound_intent.with_approval_id(approval_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "analysis_id": self.analysis_id,
-            "risk_score": self.risk_score,
-            "decision": self.decision,
-            "requester_id": self.requester_id,
-            "context_trust_level": self.context_trust_level,
-            "created_at": self.created_at.isoformat(),
-            "expires_at": self.expires_at.isoformat(),
+            "analysis_id": self._analysis_id,
+            "risk_score": self._risk_score,
+            "decision": self._decision,
+            "requester_id": self._requester_id,
+            "context_trust_level": self._context_trust_level,
+            "created_at": self._created_at.isoformat(),
+            "expires_at": self._expires_at.isoformat(),
             "is_expired": self.is_expired,
-            "bound_tool": self.bound_intent.tool_name if self.bound_intent else None,
-            "intent_hash": self.bound_intent.intent_hash if self.bound_intent else None,
+            "bound_tool": self._bound_intent.tool_name if self._bound_intent else None,
+            "intent_hash": self._bound_intent.intent_hash if self._bound_intent else None,
+            "approval_id": self._bound_intent.approval_id if self._bound_intent else None,
         }
 
 
@@ -169,7 +273,7 @@ class AnalysisContextStore:
 
             # Bind requester on first use if not already bound
             if ctx.requester_id is None:
-                ctx.requester_id = requester_id.strip()
+                ctx.bind_requester(requester_id.strip())
             elif ctx.requester_id != requester_id.strip():
                 logger.warning(
                     "Analysis context requester mismatch: bound to '%s', attempted by '%s'",
@@ -234,19 +338,12 @@ class AnalysisContextStore:
 
         Returns (is_valid, error_message, http_status_code).
         """
-        norm_tool = str(tool_name).strip().lower()
         try:
-            canonical_args = json.dumps(
-                arguments or {},
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
+            norm_tool, canonical_args, intent_hash = canonicalize_tool_intent(
+                tool_name, arguments if arguments is not None else {}
             )
         except (TypeError, ValueError) as exc:
             return False, f"Malformed tool arguments: {exc}", 400
-
-        intent_payload = f"{norm_tool}:{canonical_args}"
-        intent_hash = hashlib.sha256(intent_payload.encode("utf-8")).hexdigest()
 
         with self._lock:
             ctx = self._contexts.get(analysis_id.strip())
@@ -266,11 +363,13 @@ class AnalysisContextStore:
                     )
 
                 # Bind tool intent atomically on first valid authorization/invocation
-                ctx.bound_intent = ToolIntentBinding(
-                    tool_name=norm_tool,
-                    canonical_arguments_json=canonical_args,
-                    intent_hash=intent_hash,
-                    bound_at=datetime.now(timezone.utc),
+                ctx.set_bound_intent(
+                    ToolIntentBinding(
+                        tool_name=norm_tool,
+                        canonical_arguments_json=canonical_args,
+                        intent_hash=intent_hash,
+                        bound_at=datetime.now(timezone.utc),
+                    )
                 )
                 logger.info(
                     "Bound analysis context '%s' to tool intent: tool='%s', hash='%s'",
@@ -281,20 +380,25 @@ class AnalysisContextStore:
                 return True, None, 200
 
             # Context is already bound: verify that tool and canonical arguments match exactly
-            if ctx.bound_intent.intent_hash == intent_hash:
+            bound = ctx.bound_intent
+            if (
+                bound.tool_name == norm_tool
+                and bound.canonical_arguments_json == canonical_args
+                and bound.intent_hash == intent_hash
+            ):
                 return True, None, 200
 
             # Intent mismatch detected: identify specific deviation
-            if ctx.bound_intent.tool_name != norm_tool:
+            if bound.tool_name != norm_tool:
                 logger.warning(
                     "Tool intent mismatch for context '%s': bound to '%s', attempted '%s'",
                     analysis_id,
-                    ctx.bound_intent.tool_name,
+                    bound.tool_name,
                     norm_tool,
                 )
                 return (
                     False,
-                    f"Analysis context intent mismatch: context '{analysis_id}' is bound to tool '{ctx.bound_intent.tool_name}', cannot execute tool '{norm_tool}'",
+                    f"Analysis context intent mismatch: context '{analysis_id}' is bound to tool '{bound.tool_name}', cannot execute tool '{norm_tool}'",
                     403,
                 )
             else:
@@ -308,6 +412,42 @@ class AnalysisContextStore:
                     f"Analysis context argument tampering: context '{analysis_id}' is bound to original arguments, modified arguments rejected",
                     403,
                 )
+
+    def get_bound_approval_id(self, analysis_id: str) -> Optional[str]:
+        """Retrieve the approval ID bound to the context's intent, if any."""
+        with self._lock:
+            ctx = self._contexts.get(analysis_id.strip())
+            if ctx and ctx.bound_intent:
+                return ctx.bound_intent.approval_id
+            return None
+
+    def associate_approval_id(self, analysis_id: str, approval_id: str) -> bool:
+        """Associate an approval ID with the context's bound intent."""
+        with self._lock:
+            ctx = self._contexts.get(analysis_id.strip())
+            if not ctx or not ctx.bound_intent:
+                return False
+            ctx.set_intent_approval_id(approval_id)
+            return True
+
+    def get_or_create_approval_id(
+        self,
+        analysis_id: str,
+        creator_fn: Any,
+    ) -> Optional[str]:
+        """
+        Thread-safe deduplication: retrieve existing bound approval_id or atomically create,
+        bind, and return a new one via creator_fn under store lock.
+        """
+        with self._lock:
+            ctx = self._contexts.get(analysis_id.strip())
+            if not ctx or not ctx.bound_intent:
+                return None
+            if ctx.bound_intent.approval_id:
+                return ctx.bound_intent.approval_id
+            new_id = creator_fn()
+            ctx.set_intent_approval_id(new_id)
+            return new_id
 
     def purge_expired(self) -> int:
         """Purge all expired analysis contexts."""

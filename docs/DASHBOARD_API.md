@@ -45,17 +45,21 @@ PromptShield AI provides an adaptive runtime security gateway for LLM applicatio
 - **Identity Binding**: Each `analysis_id` is bound to the `requester_id` that initiated the analysis. Presenting another requester's `analysis_id` yields HTTP 403 Forbidden.
 - **Configurable TTL**: Analysis contexts expire after a configurable TTL (default: 300 seconds).
 
-### 2.2 Analysis-to-Tool Intent Binding
+### 2.2 Analysis-to-Tool Intent Binding & Ordered Authorization Flow
 - **Intent Protection**: An `analysis_id` cannot be reused to authorize or execute unrelated tool operations.
-- **Atomic Intent Binding**: Upon the first valid authorization attempt, the context is atomically bound to:
-  - Normalized tool name (lowercased, trimmed).
-  - Canonical JSON representation of validated arguments (`sort_keys=True`, no extra whitespace).
-  - Cryptographic SHA-256 hash of the canonical intent (`sha256(tool:args)`).
-- **Enforcement Rules**:
-  - Subsequent authorizations and executions must match the exact same tool and arguments.
-  - Rejection of changed tool names, modified arguments, nested argument tampering, and type-confusion attempts (e.g. `1` vs `"1"`).
-  - Approval-required operations remain strictly bound while awaiting human review.
-  - Concurrent authorization attempts are serialized using thread-safe locking (`RLock`) so that only one unique intent is bound.
+- **Ordered Authorization Sequence**:
+  - Preliminary evaluation is completely side-effect-free (no approvals minted and no intent bound).
+  - `DENY` decisions **NEVER** bind tool intent and never create approval records.
+  - Only when policy checks pass (`ALLOW` or `REQUIRE_APPROVAL`) is intent atomically bound.
+  - If approval is required, identical concurrent authorization requests are deduplicated under store locks so that only one pending approval is created.
+- **Strict Execution Invariant (`/api/v1/tools/execute`)**:
+  - Execution strictly requires `require_previously_bound=True`. An unbound analysis context is rejected with HTTP 403 Forbidden. Execution cannot mint an intent binding.
+- **Canonical Serialization & Integrity**:
+  - Arguments are canonicalized via `json.dumps(..., sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)`.
+  - Rejects `NaN`, `Infinity`, non-JSON objects, and invalid inputs.
+  - Tamper detection verifies normalized tool name, canonical JSON, and SHA-256 hash (`sha256(tool:args)`).
+- **In-Memory Immutability**:
+  - `AnalysisContext` fields are protected against in-memory mutation via read-only properties and controlled transition methods.
 - **Research Prototype Notice**: Intent binding is a context-consistency mechanism, not a replacement for authentication.
 
 ### 2.3 Strict Privacy Guarantees & Recursive Event Sanitization

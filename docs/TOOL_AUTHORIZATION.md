@@ -82,16 +82,33 @@ The Tool Permission Registry (`backend/app/policies/tool_registry.py`) enforces 
 
 ---
 
-## 5. Analysis Context & Tool Intent Binding (Day 9)
+## 5. Analysis Context & Tool Intent Binding (Day 9 Remediation)
 
-To prevent LLM agent workflows from reusing a benign prompt's analysis context to execute unauthorized or tampered tools:
-1. **ALLOW-Only Authorization**: Only contexts with `ctx.decision == "ALLOW"` may authorize tools. `SANITIZE` prompts (containing PII or credentials) must be resubmitted as sanitized prompts for fresh analysis. `BLOCK` prompts (injections, policy violations) are permanently rejected.
-2. **Atomic Intent Binding**: During the first valid authorization attempt, the server-controlled `AnalysisContextStore` atomically binds the context to:
-   - Normalized tool name.
-   - Canonical JSON representation of validated arguments (`sort_keys=True`, no extra whitespace).
-   - SHA-256 cryptographic intent hash.
-3. **Execution Verification**: Tool execution strictly enforces that the invoked tool and arguments match the bound intent hash. Changed tools, modified parameters, and nested type confusion attempts are rejected.
-4. **Server-Authoritative Context Trust**: Client-supplied `context_trust_level` in request bodies is ignored. Context trust is always resolved server-side from `ctx.context_trust_level` (`UNTRUSTED` by default). Unknown trust values fail closed.
+To prevent LLM agent workflows from reusing a benign prompt's analysis context to execute unauthorized or tampered tools, PromptShield AI enforces a strict, ordered 13-step authorization pipeline:
+
+### Authoritative 13-Step Authorization Sequence
+1. **Context & Requester Validation**: Validate `analysis_id` exists in `AnalysisContextStore`, has not expired, and matches the bound `requester_id`.
+2. **Authoritative Analysis Decision**: Require server decision `ALLOW`. Contexts marked `SANITIZE` (PII/secrets) or `BLOCK` (injections/policy violations) are rejected immediately.
+3. **Server-Authoritative Trust Resolution**: Context trust level is derived solely from server state; client claims (`context_trust_level`) are neutralized.
+4. **Tool Existence & Enabled Check**: Verify tool is registered and enabled in `ToolRegistry`.
+5. **Argument Schema & Type Validation**: Enforce strict Pydantic model schemas and forbid unexpected extra parameters (`extra="forbid"`).
+6. **Traversal & Path Protection**: Recursively inspect all path arguments and nested payloads for directory traversal (`..`), null bytes (`\x00`), and absolute path escapes.
+7. **PromptShield Risk Policy**: Verify server-calculated risk score $< 70$.
+8. **Role-Based Access Control (RBAC)**: Verify requester role is present in `tool.allowed_roles`.
+9. **Trust Boundary Enforcement**: Untrusted context cannot trigger `CRITICAL` risk operations.
+10. **Approval Token State Validation**: If an `approval_id` was supplied by the caller, verify it exists, is unexpired, unconsumed, approved by an admin (non-requester), and matches arguments.
+11. **Atomic Intent Binding**: Under `AnalysisContextStore._lock`, atomically bind the context to the proposed tool name and canonical arguments hash (or verify matching intent if already bound).
+    - **CRITICAL**: If steps 1–10 evaluate to `DENY`, intent is **NEVER** bound.
+12. **Approval Request Deduplication & Generation**:
+    - If authorization requires human approval and no valid approval ID was supplied, retrieve or generate the pending approval.
+    - If a pending approval for this exact bound intent already exists on the context, reuse its `approval_id`.
+    - Concurrent identical authorization requests are deduplicated under store locks so that only one pending approval is created.
+13. **Authorization Decision Return**: Return final structured authorization outcome (`ALLOW`, `REQUIRE_APPROVAL`, or `DENY`).
+
+### Strict Execution Invariants (`/api/v1/tools/execute`)
+- **Prior Authorization Required**: Execution strictly requires `require_previously_bound=True`. An unbound context is rejected with HTTP 403 Forbidden. Calling execute cannot mint an intent binding.
+- **Canonical Serialization Integrity**: Tool intent serialization utilizes `json.dumps(..., sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)` to guarantee tamper-evident SHA-256 hash validation and reject `NaN` or `Infinity` payloads.
+- **In-Memory Immutability**: `AnalysisContext` fields are read-only properties protected against accidental in-memory tampering.
 
 ---
 

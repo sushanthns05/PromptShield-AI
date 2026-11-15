@@ -12,7 +12,7 @@ from backend.app.monitoring.event_store import EventStore
 from backend.app.policies.analysis_context import AnalysisContextStore
 from backend.app.policies.approval_manager import ApprovalManager
 from backend.app.policies.risk_engine import RiskEngine
-from backend.app.policies.tool_authorizer import ToolAuthorizer
+from backend.app.policies.tool_authorizer import AuthDecision, AuthorizationResult, ToolAuthorizer
 from backend.app.policies.tool_executor import ToolExecutor
 from backend.app.policies.tool_registry import ToolRegistry
 from backend.app.privacy.pii_detector import redact_sensitive_data
@@ -486,44 +486,7 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
         logger.warning("Unrecognized context trust level '%s'. Failing closed to UNTRUSTED.", server_trust)
         norm_trust = "UNTRUSTED"
 
-    # 4. Atomic Intent Binding: Bind or validate tool intent against analysis context
-    is_valid_intent, intent_err, _ = analysis_store.bind_or_validate_intent(
-        analysis_id=payload.analysis_id,
-        tool_name=payload.tool_name,
-        arguments=payload.arguments,
-    )
-    if not is_valid_intent:
-        logger.warning(
-            "Tool authorization rejected: intent mismatch for context '%s' (requester: '%s'): %s",
-            ctx.analysis_id,
-            payload.requester_id,
-            intent_err,
-        )
-        event_store.record_event(
-            category="TOOL_AUTHORIZATION",
-            event_type="TOOL_DENIED",
-            decision="DENY",
-            risk_score=ctx.risk_score,
-            requester_id=payload.requester_id,
-            metadata={
-                "tool_name": payload.tool_name,
-                "requester_role": payload.requester_role,
-                "analysis_id": ctx.analysis_id,
-                "reason": intent_err,
-            },
-        )
-        return {
-            "decision": "DENY",
-            "tool_name": payload.tool_name,
-            "requester_id": payload.requester_id,
-            "requester_role": payload.requester_role,
-            "risk_level": "HIGH",
-            "reasons": [intent_err],
-            "approval_id": None,
-            "requires_approval": False,
-        }
-
-    # 5. Authoritative Risk Score from Server Context
+    # Server-controlled risk score
     server_risk_score = ctx.risk_score
     if payload.risk_score is not None and payload.risk_score != server_risk_score:
         logger.warning(
@@ -533,11 +496,13 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
             payload.requester_id,
         )
 
-    # Detect client privilege spoofing attempts
     client_admin = payload.is_admin is True
     client_approved = payload.approved is True
 
-    result = authorizer.authorize(
+    # 4-10. Side-effect-free preliminary authorization check
+    # Evaluates tool existence, schema, path traversal, risk score, RBAC, trust boundary,
+    # and approval state WITHOUT creating pending approvals or binding intent yet.
+    prelim_result = authorizer.evaluate_authorization(
         tool_name=payload.tool_name,
         arguments=payload.arguments,
         requester_id=payload.requester_id,
@@ -550,24 +515,116 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
         analysis_decision=ctx.decision,
     )
 
-    # Record sanitized event
+    # If preliminary check resulted in DENY, NEVER bind the intent and NEVER create an approval
+    if prelim_result.decision == AuthDecision.DENY:
+        event_store.record_event(
+            category="TOOL_AUTHORIZATION",
+            event_type="TOOL_DENIED",
+            decision="DENY",
+            risk_score=server_risk_score,
+            requester_id=payload.requester_id,
+            metadata={
+                "tool_name": payload.tool_name,
+                "requester_role": payload.requester_role,
+                "risk_level": prelim_result.risk_level,
+                "requires_approval": False,
+                "approval_id": None,
+                "analysis_id": ctx.analysis_id,
+                "reasons": prelim_result.reasons,
+            },
+        )
+        return prelim_result.to_dict()
+
+    # 11. Atomic Intent Binding: Bind or validate tool intent against analysis context
+    # Only called when preliminary policy evaluation passes (ALLOW or REQUIRE_APPROVAL)
+    is_valid_intent, intent_err, _ = analysis_store.bind_or_validate_intent(
+        analysis_id=payload.analysis_id,
+        tool_name=payload.tool_name,
+        arguments=payload.arguments,
+        require_previously_bound=False,
+    )
+    if not is_valid_intent:
+        logger.warning(
+            "Tool authorization rejected: intent mismatch for context '%s' (requester: '%s'): %s",
+            ctx.analysis_id,
+            payload.requester_id,
+            intent_err,
+        )
+        event_store.record_event(
+            category="TOOL_AUTHORIZATION",
+            event_type="TOOL_DENIED",
+            decision="DENY",
+            risk_score=server_risk_score,
+            requester_id=payload.requester_id,
+            metadata={
+                "tool_name": payload.tool_name,
+                "requester_role": payload.requester_role,
+                "risk_level": prelim_result.risk_level,
+                "analysis_id": ctx.analysis_id,
+                "reason": intent_err,
+            },
+        )
+        return {
+            "decision": "DENY",
+            "tool_name": payload.tool_name,
+            "requester_id": payload.requester_id,
+            "requester_role": payload.requester_role,
+            "risk_level": prelim_result.risk_level,
+            "reasons": [intent_err],
+            "approval_id": None,
+            "requires_approval": False,
+        }
+
+    # 12. Handle Approval Token Management:
+    # If the action requires approval and no approval ID was passed (or pending approval is required),
+    # atomically retrieve existing bound approval or mint exactly one deduplicated pending request.
+    final_approval_id = prelim_result.approval_id
+    if prelim_result.decision == AuthDecision.REQUIRE_APPROVAL:
+        def _create_appr():
+            role = authorizer._normalize_role(payload.requester_role) or payload.requester_role
+            req = authorizer.approval_manager.create_request(
+                tool_name=payload.tool_name,
+                arguments=payload.arguments,
+                requester_id=payload.requester_id,
+                requester_role=role,
+                risk_level=prelim_result.risk_level,
+            )
+            return req.approval_id
+
+        final_approval_id = analysis_store.get_or_create_approval_id(
+            analysis_id=payload.analysis_id,
+            creator_fn=_create_appr,
+        )
+
+    # 13. Construct and return final authorization decision
+    final_result = AuthorizationResult(
+        decision=prelim_result.decision,
+        tool_name=prelim_result.tool_name,
+        requester_id=prelim_result.requester_id,
+        requester_role=prelim_result.requester_role,
+        risk_level=prelim_result.risk_level,
+        reasons=prelim_result.reasons,
+        approval_id=final_approval_id,
+        requires_approval=prelim_result.requires_approval,
+    )
+
     event_type = (
         "TOOL_AUTHORIZED"
-        if result.decision.value == "ALLOW"
-        else ("TOOL_APPROVAL_REQUIRED" if result.decision.value == "REQUIRE_APPROVAL" else "TOOL_DENIED")
+        if final_result.decision == AuthDecision.ALLOW
+        else "TOOL_APPROVAL_REQUIRED"
     )
     event_store.record_event(
         category="TOOL_AUTHORIZATION",
         event_type=event_type,
-        decision=result.decision.value,
+        decision=final_result.decision.value,
         risk_score=server_risk_score,
         requester_id=payload.requester_id,
         metadata={
             "tool_name": payload.tool_name,
             "requester_role": payload.requester_role,
-            "risk_level": result.risk_level,
-            "requires_approval": result.requires_approval,
-            "approval_id": result.approval_id,
+            "risk_level": final_result.risk_level,
+            "requires_approval": final_result.requires_approval,
+            "approval_id": final_result.approval_id,
             "analysis_id": ctx.analysis_id,
         },
     )
@@ -577,12 +634,12 @@ async def authorize_tool_endpoint(payload: ToolAuthorizeRequest, request: Reques
         payload.tool_name,
         payload.requester_id,
         payload.requester_role,
-        result.decision.value,
-        result.risk_level,
+        final_result.decision.value,
+        final_result.risk_level,
         ctx.analysis_id,
     )
 
-    return result.to_dict()
+    return final_result.to_dict()
 
 
 @router.post("/api/v1/tools/execute", response_model=ToolExecuteResponse, tags=["Tool Authorization"])
@@ -649,10 +706,11 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
         norm_trust = "UNTRUSTED"
 
     # 4. Atomic Intent Binding: Verify tool execution matches previously bound intent
-    is_valid_intent, intent_err, _ = analysis_store.bind_or_validate_intent(
+    is_valid_intent, intent_err, status_code = analysis_store.bind_or_validate_intent(
         analysis_id=payload.analysis_id,
         tool_name=payload.tool_name,
         arguments=payload.arguments,
+        require_previously_bound=True,
     )
     if not is_valid_intent:
         logger.warning(
@@ -669,7 +727,7 @@ async def execute_tool_endpoint(payload: ToolExecuteRequest, request: Request):
             requester_id=payload.requester_id,
             metadata={"tool_name": payload.tool_name, "analysis_id": ctx.analysis_id, "error": intent_err},
         )
-        raise HTTPException(status_code=403, detail=intent_err)
+        raise HTTPException(status_code=status_code or 403, detail=intent_err)
 
     # 5. Server-controlled risk score is authoritative
     server_risk_score = ctx.risk_score

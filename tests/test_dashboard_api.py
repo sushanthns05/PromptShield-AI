@@ -1017,3 +1017,419 @@ def test_extra_fields_forbidden_in_request_models(client):
         },
     )
     assert status == 422
+
+
+def test_authorization_deny_never_binds_intent(client):
+    """
+    Security Requirement: A DENY authorization result must NEVER bind tool intent.
+    Context must remain completely unbound after denials across:
+    - unknown tools
+    - disabled tools
+    - argument schema violations
+    - path traversal attempts
+    - RBAC violations
+    - untrusted critical tool invocations
+    """
+    app.state.tool_registry.disable_tool("delete_file")
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Routine check", "requester_id": "deny-bind-user"},
+    )
+    assert status == 200
+    aid = a_body["analysis_id"]
+    ctx = app.state.analysis_context_store.get_context(aid)
+    assert ctx is not None
+    assert ctx.bound_intent is None
+
+    # 1. Unknown tool
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "non_existent_tool_xyz",
+            "arguments": {"key": "val"},
+            "requester_id": "deny-bind-user",
+            "requester_role": "ADMIN",
+            "analysis_id": aid,
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert ctx.bound_intent is None
+
+    # 2. Disabled tool
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "delete_file",
+            "arguments": {"filepath": "safe.log"},
+            "requester_id": "deny-bind-user",
+            "requester_role": "ADMIN",
+            "analysis_id": aid,
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert ctx.bound_intent is None
+
+    # 3. Argument schema violation (invalid argument type)
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "get_weather",
+            "arguments": {"location": 12345},
+            "requester_id": "deny-bind-user",
+            "requester_role": "USER",
+            "analysis_id": aid,
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert ctx.bound_intent is None
+
+    # 4. Path traversal attempt
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "read_file",
+            "arguments": {"filepath": "../../etc/shadow"},
+            "requester_id": "deny-bind-user",
+            "requester_role": "ADMIN",
+            "analysis_id": aid,
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert ctx.bound_intent is None
+
+    # 5. RBAC violation (USER attempting send_email)
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "send_email",
+            "arguments": {"recipient": "ops@example.com", "subject": "Hi", "body": "Test"},
+            "requester_id": "deny-bind-user",
+            "requester_role": "USER",
+            "analysis_id": aid,
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert ctx.bound_intent is None
+
+    # 6. Untrusted critical tool invocation
+    app.state.tool_registry.enable_tool("delete_file")
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "delete_file",
+            "arguments": {"filepath": "safe.log"},
+            "requester_id": "deny-bind-user",
+            "requester_role": "ADMIN",
+            "analysis_id": aid,
+            "context_trust_level": "UNTRUSTED",
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "DENY"
+    assert ctx.bound_intent is None
+
+    # Finally, a legitimate request succeeds and binds the context
+    status, body, _ = client.post(
+        "/api/v1/tools/authorize",
+        json_data={
+            "tool_name": "get_weather",
+            "arguments": {"location": "Boston"},
+            "requester_id": "deny-bind-user",
+            "requester_role": "USER",
+            "analysis_id": aid,
+        },
+    )
+    assert status == 200
+    assert body["decision"] == "ALLOW"
+    assert ctx.bound_intent is not None
+    assert ctx.bound_intent.tool_name == "get_weather"
+
+
+def test_require_approval_binds_intent_and_deduplicates(client):
+    """
+    Security Requirement: REQUIRE_APPROVAL binds intent, blocks deviations,
+    and deduplicates identical pending approval requests.
+    """
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Routine notification", "requester_id": "ops-user-1"},
+    )
+    assert status == 200
+    aid = a_body["analysis_id"]
+
+    # 1. First authorization: binds intent and generates approval request
+    payload = {
+        "tool_name": "send_email",
+        "arguments": {"recipient": "team@example.com", "subject": "Weekly Update", "body": "Status report"},
+        "requester_id": "ops-user-1",
+        "requester_role": "ADMIN",
+        "analysis_id": aid,
+    }
+    status, body, _ = client.post("/api/v1/tools/authorize", json_data=payload)
+    assert status == 200
+    assert body["decision"] == "REQUIRE_APPROVAL"
+    appr_id = body["approval_id"]
+    assert appr_id is not None
+
+    # Verify context is bound
+    ctx = app.state.analysis_context_store.get_context(aid)
+    assert ctx.bound_intent is not None
+    assert ctx.bound_intent.tool_name == "send_email"
+
+    # 2. Tampered tool name on same context is rejected with 200 DENY (intent mismatch)
+    mismatch_payload = {
+        "tool_name": "get_weather",
+        "arguments": {"location": "Austin"},
+        "requester_id": "ops-user-1",
+        "requester_role": "ADMIN",
+        "analysis_id": aid,
+    }
+    status, body_mismatch, _ = client.post("/api/v1/tools/authorize", json_data=mismatch_payload)
+    assert status == 200
+    assert body_mismatch["decision"] == "DENY"
+    assert any("intent mismatch" in r.lower() for r in body_mismatch["reasons"])
+
+    # 3. Tampered arguments on same context is rejected with 200 DENY
+    tampered_payload = {
+        "tool_name": "send_email",
+        "arguments": {"recipient": "attacker@example.com", "subject": "Exfil", "body": "Data"},
+        "requester_id": "ops-user-1",
+        "requester_role": "ADMIN",
+        "analysis_id": aid,
+    }
+    status, body_tampered, _ = client.post("/api/v1/tools/authorize", json_data=tampered_payload)
+    assert status == 200
+    assert body_tampered["decision"] == "DENY"
+    assert any("argument tampering" in r.lower() for r in body_tampered["reasons"])
+
+    # 4. Repeated identical authorization reuses existing approval ID without duplicate
+    _, initial_pending_count = app.state.approval_manager.list_requests()
+    status, body_repeat, _ = client.post("/api/v1/tools/authorize", json_data=payload)
+    assert status == 200
+    assert body_repeat["decision"] == "REQUIRE_APPROVAL"
+    assert body_repeat["approval_id"] == appr_id
+    _, new_pending_count = app.state.approval_manager.list_requests()
+    assert new_pending_count == initial_pending_count
+
+
+def test_execution_requires_prior_binding_strictly(client):
+    """
+    Security Invariant: /api/v1/tools/execute strictly requires prior authorization.
+    An unbound analysis context must be rejected with HTTP 403.
+    """
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Weather report request", "requester_id": "exec-bind-user"},
+    )
+    assert status == 200
+    aid = a_body["analysis_id"]
+
+    payload = {
+        "tool_name": "get_weather",
+        "arguments": {"location": "Denver"},
+        "requester_id": "exec-bind-user",
+        "requester_role": "USER",
+        "analysis_id": aid,
+    }
+
+    # Direct execution attempt without prior authorization must fail
+    status, body, _ = client.post("/api/v1/tools/execute", json_data=payload)
+    assert status == 403
+    assert "has not been bound to a prior authorized tool intent" in body["detail"]
+
+    # Verify context remains unbound
+    ctx = app.state.analysis_context_store.get_context(aid)
+    assert ctx.bound_intent is None
+
+    # Now authorize properly
+    auth_status, auth_body, _ = client.post("/api/v1/tools/authorize", json_data=payload)
+    assert auth_status == 200
+    assert auth_body["decision"] == "ALLOW"
+    assert ctx.bound_intent is not None
+
+    # Now execution succeeds
+    exec_status, exec_body, _ = client.post("/api/v1/tools/execute", json_data=payload)
+    assert exec_status == 200
+    assert exec_body["status"] == "SUCCESS"
+
+
+def test_concurrent_authorization_deduplicates_pending_approvals(client):
+    """
+    Concurrency Security Guarantee:
+    Concurrent identical authorization requests requiring approval produce exactly
+    one pending approval record and return the identical approval_id to all callers.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Notification email blast", "requester_id": "concurr-admin"},
+    )
+    assert status == 200
+    aid = a_body["analysis_id"]
+
+    payload = {
+        "tool_name": "send_email",
+        "arguments": {"recipient": "alerts@example.com", "subject": "Notification", "body": "Alert body"},
+        "requester_id": "concurr-admin",
+        "requester_role": "ADMIN",
+        "analysis_id": aid,
+    }
+
+    def _call_auth():
+        s, b, _ = client.post("/api/v1/tools/authorize", json_data=payload)
+        return s, b
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_call_auth) for _ in range(8)]
+        results = [f.result() for f in futures]
+
+    approval_ids = set()
+    for s, b in results:
+        assert s == 200
+        assert b["decision"] == "REQUIRE_APPROVAL"
+        approval_ids.add(b["approval_id"])
+
+    # Exactly ONE unique approval_id across all 8 concurrent requests
+    assert len(approval_ids) == 1
+    sole_approval_id = approval_ids.pop()
+    assert sole_approval_id is not None
+
+    # Verify context is bound to this exact approval ID
+    ctx = app.state.analysis_context_store.get_context(aid)
+    assert ctx.bound_intent.approval_id == sole_approval_id
+
+
+def test_concurrent_conflicting_authorization_allows_only_one_binding(client):
+    """
+    Concurrency Security Guarantee:
+    When two conflicting authorizations race for the same unbound context,
+    exactly one succeeds in binding and the other is rejected.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    status, a_body, _ = client.post(
+        "/api/v1/analyze",
+        json_data={"prompt": "Dual query check", "requester_id": "race-user-1"},
+    )
+    assert status == 200
+    aid = a_body["analysis_id"]
+
+    payload_a = {
+        "tool_name": "get_weather",
+        "arguments": {"location": "London"},
+        "requester_id": "race-user-1",
+        "requester_role": "USER",
+        "analysis_id": aid,
+    }
+    payload_b = {
+        "tool_name": "get_weather",
+        "arguments": {"location": "Tokyo"},
+        "requester_id": "race-user-1",
+        "requester_role": "USER",
+        "analysis_id": aid,
+    }
+
+    def _send(p):
+        s, b, _ = client.post("/api/v1/tools/authorize", json_data=p)
+        return s, b
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f_a = executor.submit(_send, payload_a)
+        f_b = executor.submit(_send, payload_b)
+        res_a = f_a.result()
+        res_b = f_b.result()
+
+    decisions = [res_a[1]["decision"], res_b[1]["decision"]]
+    assert "ALLOW" in decisions
+    assert "DENY" in decisions
+
+
+def test_canonicalize_tool_intent_and_nan_infinity_rejection():
+    """
+    Integrity Guarantee:
+    canonicalize_tool_intent strictly handles JSON canonicalization,
+    sorts keys, enforces type distinctions, and rejects NaN and Infinity.
+    """
+    import math
+    from backend.app.policies.analysis_context import canonicalize_tool_intent
+
+    # 1. Key sorting deterministic equivalence
+    norm1, json1, hash1 = canonicalize_tool_intent("TestTool", {"b": 2, "a": 1})
+    norm2, json2, hash2 = canonicalize_tool_intent("testtool", {"a": 1, "b": 2})
+    assert norm1 == "testtool"
+    assert norm2 == "testtool"
+    assert json1 == '{"a":1,"b":2}'
+    assert json2 == '{"a":1,"b":2}'
+    assert hash1 == hash2
+
+    # 2. Type confusion distinction: integer 1 vs string "1"
+    _, json_int, hash_int = canonicalize_tool_intent("tool", {"val": 1})
+    _, json_str, hash_str = canonicalize_tool_intent("tool", {"val": "1"})
+    assert json_int == '{"val":1}'
+    assert json_str == '{"val":"1"}'
+    assert hash_int != hash_str
+
+    # 3. NaN rejection (allow_nan=False)
+    import pytest
+    with pytest.raises(ValueError, match="Non-canonical or invalid argument structure"):
+        canonicalize_tool_intent("tool", {"val": float("nan")})
+
+    # 4. Infinity rejection
+    with pytest.raises(ValueError, match="Non-canonical or invalid argument structure"):
+        canonicalize_tool_intent("tool", {"val": float("inf")})
+
+    with pytest.raises(ValueError, match="Non-canonical or invalid argument structure"):
+        canonicalize_tool_intent("tool", {"val": float("-inf")})
+
+    # 5. Invalid tool name or arguments type
+    with pytest.raises(ValueError, match="tool_name must be a non-empty string"):
+        canonicalize_tool_intent("", {"a": 1})
+
+    with pytest.raises(ValueError, match="arguments must be a dictionary"):
+        canonicalize_tool_intent("tool", "not-a-dict")  # type: ignore
+
+
+def test_analysis_context_immutability():
+    """
+    Integrity Guarantee:
+    AnalysisContext fields cannot be accidentally or maliciously mutated in-memory.
+    """
+    import pytest
+    from datetime import datetime, timezone
+    from backend.app.policies.analysis_context import AnalysisContext, ToolIntentBinding
+
+    ctx = AnalysisContext(
+        analysis_id="anls-immut-01",
+        risk_score=25,
+        decision="ALLOW",
+        requester_id="user-immut",
+        context_trust_level="UNTRUSTED",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+    )
+
+    # Direct attribute modification must raise AttributeError
+    with pytest.raises(AttributeError):
+        ctx.risk_score = 0  # type: ignore
+
+    with pytest.raises(AttributeError):
+        ctx.decision = "ALLOW"  # type: ignore
+
+    with pytest.raises(AttributeError):
+        ctx.requester_id = "hacker"  # type: ignore
+
+    with pytest.raises(AttributeError):
+        ctx.context_trust_level = "TRUSTED"  # type: ignore
+
+    with pytest.raises(AttributeError):
+        ctx.bound_intent = ToolIntentBinding("tool", "{}", "hash", datetime.now(timezone.utc))  # type: ignore
+
+    # Controlled methods enforce invariants
+    with pytest.raises(ValueError, match="Requester already bound"):
+        ctx.bind_requester("another-user")

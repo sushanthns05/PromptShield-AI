@@ -333,6 +333,11 @@ def test_api_tool_execute_authorized(api_client):
         "requester_role": "USER",
         "analysis_id": a_body["analysis_id"],
     }
+    # Prior authorization is strictly required to bind tool intent
+    auth_status, auth_body, _ = api_client.post("/api/v1/tools/authorize", json_data=payload)
+    assert auth_status == 200
+    assert auth_body["decision"] == "ALLOW"
+
     status, body, _ = api_client.post("/api/v1/tools/execute", json_data=payload)
     assert status == 200
     assert body["status"] == "SUCCESS"
