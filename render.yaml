@@ -8,7 +8,7 @@ services:
     startCommand: "uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.9
+        value: 3.12.8
       - key: PROMPTSHIELD_ALLOWED_ORIGINS
         value: "https://pomptshieldai.web.app,https://pomptshieldai.firebaseapp.com,http://localhost:3000,http://localhost:5173"
       - key: PROMPTSHIELD_DATASET_PATH

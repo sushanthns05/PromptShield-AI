@@ -50,7 +50,7 @@ If you prefer to configure the Web Service manually:
 
 | Key | Value | Description |
 |---|---|---|
-| `PYTHON_VERSION` | `3.11.9` | Ensures compatible Python runtime |
+| `PYTHON_VERSION` | `3.12.8` | Ensures compatible Python runtime (supports Python 3.11 and 3.12) |
 | `PROMPTSHIELD_ALLOWED_ORIGINS` | `https://pomptshieldai.web.app,https://pomptshieldai.firebaseapp.com,http://localhost:3000` | Enables CORS for your Firebase frontend |
 | `PROMPTSHIELD_DATASET_PATH` | `research/datasets/prompts.csv` | Relative path to prompts dataset |
 
